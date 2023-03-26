@@ -1,0 +1,18 @@
+goal =
+	"¬∀x ϕ ⊢ ∃x ¬ϕ"
+
+proof =
+	[ ( 0, ( "¬(∀x (ϕ))", "premise" ) )
+	, ( 1, ( "¬∃x ¬ϕ", "ass" ) )
+	, ( 2, ( "[x0]", "" ) )
+	, ( 3, ( "¬ϕ", "ass" ) )
+	, ( 3, ( "∃x ¬ϕ", "∃i" ) )
+	, ( 3, ( "⊥", "¬e" ) )
+	, ( 2, ( "ϕ", "pbc" ) )
+	, ( 1, ( "∀x ϕ", "∀i" ) )
+	, ( 1, ( "⊥", "¬e" ) )
+	, ( 0, ( "∃x (¬ϕ)", "pbc" ) )
+	]
+
+config =
+	{fol:True,qtype:True,replacesc:True,replacekw:True,replacegreek:True,subset:FOL,conjstronger:False,inputmode:False,heuristics:True}

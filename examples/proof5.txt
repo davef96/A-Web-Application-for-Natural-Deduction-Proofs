@@ -1,0 +1,17 @@
+goal =
+    "∃x(P(x)), ∀x ∀y (P(x) ⟶ Q(y)) ⊢ ∀y Q(y) "
+
+proof =
+    [ ( 0, ( "∃x(P(x))", "premise" ) )
+    , ( 0, ( "∀x ∀y (P(x) ⟶ Q(y))", "premise" ) )
+    , ( 1, ( "[z]", "" ) )
+    , ( 2, ( "[y0] P(y0)", "assumption" ) )
+    , ( 2, ( "∀y (P(y0) ⟶ Q(y))", "∀e" ) )
+    , ( 2, ( "P(y0) ⟶ Q(z)", "∀e" ) )
+    , ( 2, ( "Q(z)", "⟶e" ) )
+    , ( 1, ( "Q(z)", "∃e" ) )
+    , ( 0, ( "∀y(Q(y))", "∀i" ) )
+    ]
+
+config =
+	{fol:True,qtype:True,replacesc:True,replacekw:True,replacegreek:True,subset:FOL,conjstronger:False,inputmode:False,heuristics:True}

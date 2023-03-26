@@ -1,0 +1,12 @@
+goal =
+	"P ⊢ ∀x (P ⟶ P)"
+
+proof =
+	[ ( 1, ( "[x0]", "" ) )
+	, ( 2, ( "P", "prem" ) )
+	, ( 1, ( "P ⟶ P", "⟶i" ) )
+	, ( 0, ( "∀x (P ⟶ P)", "∀i" ) )
+	]
+
+config =
+	{fol:True,qtype:True,replacesc:True,replacekw:True,replacegreek:True,subset:FOL,conjstronger:False,inputmode:False,heuristics:True}

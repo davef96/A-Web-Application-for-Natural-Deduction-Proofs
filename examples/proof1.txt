@@ -1,0 +1,15 @@
+goal =
+	"∀x. P(x,y) ⟶ Q(x,y), ∃z. P(z,y) ⊢ ∃z. Q(z,y)"
+
+proof =
+	[ ( 0, ( "∀x. P(x,y) ⟶ Q(x,y)", "premise" ) )
+	, ( 0, ( "∃z. P(z,y)", "premise" ) )
+	, ( 1, ( "[z0] P(z0,y)", "ass" ) )
+	, ( 1, ( "P(z0,y) ⟶ Q(z0,y)", "∀e" ) )
+	, ( 1, ( "Q(z0,y)", "⟶e" ) )
+	, ( 1, ( "∃z. Q(z,y)", "∃i" ) )
+	, ( 0, ( "∃z. Q(z,y)", "∃e" ) )
+	]
+
+config =
+	{fol:True,qtype:False,replacesc:True,replacekw:True,replacegreek:True,subset:FOL,conjstronger:False,inputmode:False,heuristics:True}
