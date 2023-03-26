@@ -23,6 +23,7 @@ start `elm reactor` in the `src` folder and open `Main.elm`, e.g., ([http://loca
 - Some valid applications of equality elimination are incorrectly classified as invalid
 - The cursor/caret is moved to the end of the line whenever a keyword/shortcut in a string is replaced by a unicode symbol
 - Some unicode symbols may be displayed incorrectly if the user's browser chooses a font that does not support these symbols
+- Lines that only fix variables are not included when displaying a box reference, e.g., if a box contains lines 1 to 5 and line 1 only introduces variables then the application will display `2--5`
 
 
 
