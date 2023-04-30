@@ -6,7 +6,7 @@ module ProofChecking exposing (..)
 import Formula exposing (Formula(..), FrmSubst, Operator(..), Seq, Term(..), TermSubst)
 import ModelDefs exposing (ParserConfig, RuleSubset, VarType)
 import Proof exposing (BuildLineState(..), Justification(..), Proof(..))
-import Rule exposing (Abstract(..), IndexedRulePremises, PremiseType(..), Rule, RuleConclusion(..), RulePremises, RuleVersion(..))
+import Rule exposing (Abstract(..), IndexedMarkedPremises, MarkedAbstract, PremiseType(..), Rule, RuleConclusion(..), RulePremises, RuleVersion(..))
 import Set exposing (Set)
 import Utils
 
@@ -34,12 +34,12 @@ type Fact
 
 
 -- type to represent outcomes of checking
--- 'LineSuccess' and 'LineQED' have a list of 'Factpos' that have been used to derive the fact in this line
+-- 'LineSuccess' and 'LineQED' have a list of 'Factpos' that have been used to derive the fact in this line, a list of generalized versions of formulas required for matching, and the rule version used
 
 
 type ProofCheck
-    = LineSuccess (List FactPos) RuleVersion
-    | LineQED (List FactPos) RuleVersion
+    = LineSuccess (List FactPos) (List Formula) RuleVersion
+    | LineQED (List FactPos) (List Formula) RuleVersion
     | LineError String
     | LineWarning String
 
@@ -189,18 +189,28 @@ displayRuleVersion rulev =
             "2"
 
 
-displayLineState : Int -> ProofCheck -> String
-displayLineState i c =
+verNonDefault : RuleVersion -> Bool
+verNonDefault rulev =
+    case rulev of
+        Default ->
+            False
+
+        _ ->
+            True
+
+
+displayLineState : Bool -> Int -> ProofCheck -> String
+displayLineState q i c =
     let
         sn =
             String.fromInt (i + 1)
     in
     case c of
-        LineSuccess deps rulev ->
-            sn ++ ": ✓" ++ displayFactPositions deps ++ ";" ++ displayRuleVersion rulev
+        LineSuccess deps genfs rulev ->
+            sn ++ ": ✓" ++ displayFactPositions deps ++ ";" ++ Formula.displayFormulas q genfs ++ ";" ++ displayRuleVersion rulev
 
-        LineQED deps rulev ->
-            sn ++ ": ∎" ++ displayFactPositions deps ++ ";" ++ displayRuleVersion rulev
+        LineQED deps genfs rulev ->
+            sn ++ ": ∎" ++ displayFactPositions deps ++ ";" ++ Formula.displayFormulas q genfs ++ ";" ++ displayRuleVersion rulev
 
         LineError msg ->
             sn ++ ": ⛔" ++ msg
@@ -232,17 +242,17 @@ displayProofState q state =
         ( ( level, i ), fs, result ) =
             state
     in
-    [ "Iterator: " ++ String.fromInt i, "Level: " ++ String.fromInt level, "Facts: " ] ++ displayFacts q fs ++ displayProofChecking result
+    [ "Iterator: " ++ String.fromInt i, "Level: " ++ String.fromInt level, "Facts: " ] ++ displayFacts q fs ++ displayProofChecking q result
 
 
-displayProofChecking : CheckResult -> List String
-displayProofChecking result =
+displayProofChecking : Bool -> CheckResult -> List String
+displayProofChecking q result =
     let
         ( xs, ys ) =
             result
 
         sxs =
-            List.indexedMap displayLineState xs
+            List.indexedMap (displayLineState q) xs
 
         sys =
             List.map (\( state, pos ) -> displayBlockState pos state) ys
@@ -278,8 +288,8 @@ check q heuristics sub proof =
         result =
             stateToResult state
     in
-    -- only check for redundant lines if proof free of errors
-    if proofValid result then
+    -- only check for redundant lines if proof free of errors AND proof finished
+    if resultValid result && resultQED result then
         -- add redundancy information to state (currently ignoring errors in redundancyCheck)
         case redundancyCheck state of
             Ok x ->
@@ -315,49 +325,55 @@ fixVars n =
 -- True: no errors, but may contain warnings, e.g., redundant lines
 
 
-proofValid : CheckResult -> Bool
-proofValid result =
-    let
-        ( prfcheck, _ ) =
-            result
-    in
-    -- every line free of errors
-    List.foldl
-        (\x state ->
-            case x of
-                LineError _ ->
-                    False
-
-                _ ->
-                    state
-        )
-        True
-        prfcheck
+resultValid : CheckResult -> Bool
+resultValid result =
+    result
+        |> Tuple.first
+        |> proofValid
 
 
 
--- checks if (checked) proof is finished (last line QED)
+-- every line free of errors
 
 
-proofQED : CheckResult -> Bool
-proofQED result =
-    let
-        ( prfcheck, _ ) =
-            result
+proofValid : List ProofCheck -> Bool
+proofValid ps =
+    ps
+        |> List.foldl
+            (\x state ->
+                case x of
+                    LineError _ ->
+                        False
 
-        last =
-            List.head (List.reverse prfcheck)
-    in
-    case last of
-        Just x ->
-            case x of
-                LineQED _ _ ->
-                    True
+                    _ ->
+                        state
+            )
+            True
 
-                _ ->
-                    False
 
-        Nothing ->
+
+-- checks if (checked) proof is finished (proof contains line that derives proof goal)
+
+
+resultQED : CheckResult -> Bool
+resultQED result =
+    result
+        |> Tuple.first
+        |> proofQED
+
+
+proofQED : List ProofCheck -> Bool
+proofQED ps =
+    ps
+        |> List.foldl
+            (\x state ->
+                case x of
+                    LineQED _ _ _ ->
+                        True
+
+                    _ ->
+                        state
+            )
             False
 
 
@@ -399,7 +415,7 @@ checkBlockSuccess state f =
 -- helper for updating the checker state in case of success
 
 
-checkSuccess : CheckState -> Fact -> RuleVersion -> CheckState
+checkSuccess : CheckState -> Fact -> List Formula -> RuleVersion -> CheckState
 checkSuccess =
     checkSuc LineSuccess
 
@@ -408,7 +424,7 @@ checkSuccess =
 -- helper for updating the checker state in case of QED (success that ends the proof)
 
 
-checkQED : CheckState -> Fact -> RuleVersion -> CheckState
+checkQED : CheckState -> Fact -> List Formula -> RuleVersion -> CheckState
 checkQED =
     checkSuc LineQED
 
@@ -417,8 +433,8 @@ checkQED =
 -- helper for 'checkAssumption', 'checkSuccess' and 'checkQED'
 
 
-checkSuc : (List FactPos -> RuleVersion -> ProofCheck) -> CheckState -> Fact -> RuleVersion -> CheckState
-checkSuc ctor state f rulev =
+checkSuc : (List FactPos -> List Formula -> RuleVersion -> ProofCheck) -> CheckState -> Fact -> List Formula -> RuleVersion -> CheckState
+checkSuc ctor state f genfs rulev =
     let
         ( i, fs, ( pcs, bcs ) ) =
             state
@@ -432,107 +448,187 @@ checkSuc ctor state f rulev =
                     []
     in
     -- add fact 'f' to 'fs' and respective constructor call to 'pcs'
-    ( i, fs ++ [ f ], ( pcs ++ [ ctor pos rulev ], bcs ) )
+    ( i, fs ++ [ f ], ( pcs ++ [ ctor pos genfs rulev ], bcs ) )
 
 
 
 -- matches terms (no restrictions)
+-- returns tuple: (required substitutions, not matchable substitutions)
 
 
-matchTerms : Term -> Term -> List TermSubst
+matchTerms : Term -> Term -> ( List TermSubst, List TermSubst )
 matchTerms t1 t2 =
     case t1 of
         Var _ ->
-            [ ( t1, t2 ) ]
+            -- x vs. y or x vs. f(...)
+            ( [ ( t1, t2 ) ], [] )
 
         Func s1 ts1 ->
             case t2 of
                 Var _ ->
-                    [ ( t1, t2 ) ]
+                    -- f(...) vs. x ("Func-Var clash")
+                    ( [], [ ( t1, t2 ) ] )
 
                 Func s2 ts2 ->
-                    -- f(...) vs. f(...)
                     if s1 == s2 && List.length ts1 == List.length ts2 then
+                        -- f(...) vs. f(...)
                         List.map2 matchTerms ts1 ts2
-                            |> List.concat
-                        -- f(...) vs. g(...)
+                            |> (\rs -> ( List.concatMap Tuple.first rs, List.concatMap Tuple.second rs ))
 
                     else
-                        [ ( t1, t2 ) ]
+                        -- f(...) vs. g(...) ("Func clash")
+                        ( [], [ ( t1, t2 ) ] )
+
+
+
+-- calls matchTermsGeneralized in decomposition step to be able to do recursive generalization
+
+
+matchTermsGeneralizedHelper : Maybe ( Term, Term ) -> List String -> List String -> Term -> Term -> ( List TermSubst, List TermSubst, Maybe Term )
+matchTermsGeneralizedHelper meq lbound rbound t1 t2 =
+    case t1 of
+        Var _ ->
+            -- x vs. y or x vs. f(...)
+            ( [ ( t1, t2 ) ], [], Just t1 )
+
+        Func s1 ts1 ->
+            case t2 of
+                Var _ ->
+                    -- f(...) vs. x ("Func-Var clash")
+                    ( [], [ ( t1, t2 ) ], Nothing )
+
+                Func s2 ts2 ->
+                    if s1 == s2 && List.length ts1 == List.length ts2 then
+                        -- f(...) vs. f(...)
+                        List.map2 (matchTermsGeneralized meq lbound rbound) ts1 ts2
+                            |> (\rs ->
+                                    ( List.concatMap (\( x1, _, _ ) -> x1) rs
+                                    , List.concatMap (\( _, x2, _ ) -> x2) rs
+                                    , rs
+                                        |> List.map (\( _, _, x3 ) -> x3)
+                                        |> List.foldl (Maybe.map2 (\t ts -> ts ++ [ t ])) (Just [])
+                                        |> Maybe.map (\ts -> Func s1 ts)
+                                    )
+                               )
+
+                    else
+                        -- f(...) vs. g(...) ("Func clash")
+                        ( [], [ ( t1, t2 ) ], Nothing )
+
+
+
+-- given equality lhs = rhs, checks if t1 == lhs and t2 == rhs and no capturing occurs
+
+
+matchTermsGeneralized : Maybe ( Term, Term ) -> List String -> List String -> Term -> Term -> ( List TermSubst, List TermSubst, Maybe Term )
+matchTermsGeneralized meq lbound rbound t1 t2 =
+    let
+        nobound =
+            \l r ->
+                ( l |> Formula.termVars |> Set.toList, r |> Formula.termVars |> Set.toList )
+                    |> Tuple.mapBoth (List.any (\v -> List.member v lbound)) (List.any (\v -> List.member v rbound))
+                    |> (\( b1, b2 ) -> not b1 && not b2)
+    in
+    case meq of
+        Just ( lhs, rhs ) ->
+            {- let
+                   deb1 =
+                       Debug.log "eq vs. terms = " ((lhs, "=====", rhs), (t1, "==?==",t2), (lbound, "<- lb | rb ->" ,rbound))
+               in
+            -}
+            if t1 == lhs && t2 == rhs && nobound lhs rhs then
+                --Debug.log "Terms were matched using a generalized form!"
+                ( [], [], Just (Var "?") )
+
+            else
+                -- cannot insert '?' here since either:
+                -- 1) some var in lhs or rhs is bound
+                -- 2) further decomposition of t1 and t2 is required
+                matchTermsGeneralizedHelper meq lbound rbound t1 t2
+
+        Nothing ->
+            -- no equality was given; normal matching suffices
+            matchTerms t1 t2
+                |> (\( x1, x2 ) -> ( x1, x2, Nothing ))
 
 
 
 -- checks if two formulas match, and obtains required substitutions on formula and term level
 -- left formula can contain formula placeholders, right formula must be fully instantiated (on formula level)
--- on success: returns (fsubsts, tsubsts, refd)
+-- on success: returns (fsubsts, tsubsts, (errsubsts, capsubsts, genfrm)
 -- 1) fsubsts: required formula substitutions, i.e., apply(fsubsts, frm1) = frm2 if fsubsts free of clashes
 -- 2) tsubsts: required term substitutions, i.e., apply(fsubsts & tsubsts, frm1) = frm2 if fsubsts free of clashes, tsubsts free of clashes & capturing
+-- 3) errsubts: term substitutions that were not possible (func-func or func-var clash while matching terms)
+-- 4) capsubsts: term substitutions that lead to capturing
+-- 5) genfrm: formula containing '?'; generalized form
 -- on error: returns (errdetails, (subformula, subformula))
--- 1) string describing why matching failed
+-- 1) errdetails: string describing why matching failed
 -- 2) tuple of subformulas where matching yielded error, i.e., frm1 & frm2 from respective recursive call
 
 
-matchFormulas : Formula -> Formula -> Result ( String, ( Formula, Formula ) ) ( List FrmSubst, List TermSubst, ( List String, List String ) )
+matchFormulas : Formula -> Formula -> Result ( String, ( Formula, Formula ) ) ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) )
 matchFormulas frm1 frm2 =
-    let
-        direction =
-            \res ->
-                case res of
-                    Ok ( xs, ys, ref ) ->
-                        -- we have to determine the direction of tsubst
-                        -- match "ex ?1. P(x0,a)" with "ex x. P(x,a)" yields (x0,x), which has to be flipped
-                        -- lref = [], rref = [x]
-                        -- other case match "ex x. P(x,a)" with "ex ?1. P(x0,a)" yields expected (x,x0)
-                        -- lref = [x], rref = []
-                        let
-                            ( atsubsts, ctsubsts ) =
-                                Formula.splitAbstractTermSubsts ys
-
-                            ( ref1, ref2 ) =
-                                ref
-
-                            uref1 =
-                                ref1
-                                    |> Set.fromList
-                                    -- careful with updating vars: only abstract part!
-                                    |> Formula.updateVarsWithList atsubsts
-
-                            uref2 =
-                                ref2
-                                    |> Set.fromList
-
-                            rdiff =
-                                Set.diff uref2 uref1
-
-                            utsubsts =
-                                if uref1 == uref2 then
-                                    -- no need for any flipping
-                                    atsubsts ++ ctsubsts
-
-                                else if Set.isEmpty rdiff then
-                                    -- flip abstract part
-                                    atsubsts
-                                        |> List.map (\( x1, y1 ) -> ( y1, x1 ))
-                                        |> (\zs -> zs ++ ctsubsts)
-
-                                else
-                                    -- flip specific part
-                                    ctsubsts
-                                        |> List.map (\( x1, y1 ) -> ( y1, x1 ))
-                                        |> (\zs -> atsubsts ++ zs)
-                        in
-                        -- additional cleaning since flipping may introduces duplicates
-                        Ok ( xs, utsubsts |> Utils.removeDuplicates, ref )
-
-                    Err y ->
-                        Err y
-    in
-    matchFormulasHelper [] [] frm1 frm2
-        |> direction
+    matchFormulasHelper Nothing [] [] frm1 frm2
+        |> Result.map (\( x1, x2, ( x31, x32, _ ) ) -> ( x1, x2, ( x31, x32, Nothing ) ))
 
 
-matchFormulasHelper : List String -> List String -> Formula -> Formula -> Result ( String, ( Formula, Formula ) ) ( List FrmSubst, List TermSubst, ( List String, List String ) )
-matchFormulasHelper lbound rbound frm1 frm2 =
+
+-- performs matching in case a generalized form is required (given t1 = t2)
+
+
+matchFormulasGeneralized : Maybe ( Term, Term ) -> Formula -> Formula -> Result ( String, ( Formula, Formula ) ) ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) )
+matchFormulasGeneralized meq frm1 frm2 =
+    matchFormulasHelper meq [] [] frm1 frm2
+
+
+termNotFree : List String -> Term -> Bool
+termNotFree bound term =
+    term
+        |> Formula.termVars
+        |> Set.toList
+        |> List.any (\v -> List.member v bound)
+
+
+
+-- obtain substitutions that result in capturing
+-- for normal matching it suffices to check that the replacement does not get captured; however, for generalized matching neither lhs nor rhs is allowed to be bound
+
+
+capturedCheck : Maybe ( Term, Term ) -> List String -> List String -> List TermSubst -> List TermSubst
+capturedCheck meq lbound rbound tsubsts =
+    case meq of
+        Nothing ->
+            tsubsts
+                |> List.filter
+                    (\( _, replacement ) ->
+                        replacement
+                            |> termNotFree lbound
+                    )
+                |> Utils.removeEqPairs
+
+        Just _ ->
+            {- let
+                   deb =
+                       Debug.log "generalized capture check on " (tsubsts, lbound, rbound)
+               in
+               -- the left tuple element is cleaned up, simply for readability;
+            -}
+            ( tsubsts |> List.filter (\( lhs, rhs ) -> termNotFree lbound lhs), tsubsts |> List.filter (\( lhs, rhs ) -> termNotFree rbound rhs) )
+                |> (\( xs1, ys1 ) ->
+                        ( Utils.without ys1 xs1, ys1 )
+                            |> (\( xs2, ys2 ) ->
+                                    ( List.map (\( lhs, rhs ) -> ( rhs, lhs )) xs2, ys2 )
+                                        |> (\( xs, ys ) ->
+                                                xs
+                                                    ++ ys
+                                                    |> Utils.removeEqPairs
+                                           )
+                               )
+                   )
+
+
+matchFormulasHelper : Maybe ( Term, Term ) -> List String -> List String -> Formula -> Formula -> Result ( String, ( Formula, Formula ) ) ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) )
+matchFormulasHelper meq lbound rbound frm1 frm2 =
     let
         ( op1, args1 ) =
             Formula.deconstructFormula frm1
@@ -566,34 +662,24 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                 _ ->
                     Nothing
 
-        -- sets of actually referenced bound vars
-        -- e.g., all x. P ==> x not referenced, all x. P(x) ==> x referenced
-        refd =
-            \f1 f2 ->
-                ( Set.intersect (Formula.freeVars f1) (Set.fromList lbound), Set.intersect (Formula.freeVars f2) (Set.fromList rbound) )
-                    |> Tuple.mapBoth Set.toList Set.toList
-
         recur =
-            \lhsargs rhsargs ->
+            \lhsargs rhsargs mop ->
                 List.map2
                     (\arg1 arg2 ->
                         let
                             ( rop, _ ) =
                                 Formula.deconstructFormula arg2
-
-                            ref =
-                                refd arg1 arg2
                         in
                         case arg1 of
                             PredConst s1 ->
                                 if Formula.abstract s1 then
-                                    Ok ( [ ( arg1, arg2 ) ], [], ref )
+                                    Ok ( [ ( arg1, arg2 ) ], [], ( [], [], Just arg1 ) )
 
                                 else
                                     case arg2 of
                                         PredConst s2 ->
                                             if s1 == s2 then
-                                                Ok ( [], [], ref )
+                                                Ok ( [], [], ( [], [], Just arg1 ) )
 
                                             else
                                                 err ("Name mismatch: '" ++ s1 ++ "' vs. '" ++ s2 ++ "'")
@@ -605,10 +691,22 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                                 case arg2 of
                                     Equals ( t21, t22 ) ->
                                         let
+                                            ( tsubsts1, errsubsts1, mt1 ) =
+                                                matchTermsGeneralized meq lbound rbound t11 t21
+
+                                            ( tsubsts2, errsubsts2, mt2 ) =
+                                                matchTermsGeneralized meq lbound rbound t12 t22
+
                                             tsubsts =
-                                                matchTerms t11 t21 ++ matchTerms t12 t22
+                                                tsubsts1 ++ tsubsts2
+
+                                            errsubsts =
+                                                errsubsts1 ++ errsubsts2
+
+                                            cap =
+                                                capturedCheck meq lbound rbound tsubsts
                                         in
-                                        Ok ( [], tsubsts, ref )
+                                        Ok ( [], tsubsts, ( errsubsts, cap, Maybe.map2 (\t1 t2 -> Equals ( t1, t2 )) mt1 mt2 ) )
 
                                     _ ->
                                         err ("Operator mismatch: '＝' vs. '" ++ Formula.displayOperator rop ++ "'")
@@ -618,11 +716,22 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                                     Predicate s2 ts2 ->
                                         if s1 == s2 && List.length ts1 == List.length ts2 then
                                             let
-                                                tsubsts =
-                                                    List.map2 matchTerms ts1 ts2
-                                                        |> List.concat
+                                                ( tsubsts, errsubsts, mfrm ) =
+                                                    List.map2 (matchTermsGeneralized meq lbound rbound) ts1 ts2
+                                                        |> (\rs ->
+                                                                ( List.concatMap (\( x1, _, _ ) -> x1) rs
+                                                                , List.concatMap (\( _, x2, _ ) -> x2) rs
+                                                                , rs
+                                                                    |> List.map (\( _, _, x3 ) -> x3)
+                                                                    |> List.foldl (Maybe.map2 (\t ts -> ts ++ [ t ])) (Just [])
+                                                                    |> Maybe.map (\ts -> Predicate s1 ts)
+                                                                )
+                                                           )
+
+                                                cap =
+                                                    capturedCheck meq lbound rbound tsubsts
                                             in
-                                            Ok ( [], tsubsts, ref )
+                                            Ok ( [], tsubsts, ( errsubsts, cap, mfrm ) )
 
                                         else if s1 == s2 && List.length ts1 /= List.length ts2 then
                                             err ("Arity mismatch: " ++ String.fromInt (List.length ts1) ++ " vs. " ++ String.fromInt (List.length ts2))
@@ -636,12 +745,21 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                             Exists x1 f1 ->
                                 case arg2 of
                                     Exists x2 f2 ->
-                                        case matchFormulasHelper (x1 :: lbound) (x2 :: rbound) f1 f2 of
-                                            Ok ( xs, ys, rref ) ->
-                                                Ok ( xs, ys ++ [ ( Var x1, Var x2 ) ], Utils.appendTuples ref rref )
+                                        if Formula.abstract x2 then
+                                            matchFormulasHelper meq (x2 :: lbound) (x1 :: rbound) f1 f2
+                                                |> Result.map
+                                                    (\( xs, ys, ( errs, cap, mfrm ) ) ->
+                                                        ( xs, ys ++ [ ( Var x2, Var x1 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> Exists x2 frm) ) )
+                                                    )
 
-                                            Err pair ->
-                                                Err pair
+                                        else if Formula.abstract x1 && Formula.specificFormula f1 then
+                                            -- flip arguments for recursive call
+                                            matchFormulasHelper meq (x1 :: lbound) (x2 :: rbound) f2 f1
+                                                |> Result.map (\( xs, ys, ( errs, cap, mfrm ) ) -> ( xs, ys ++ [ ( Var x1, Var x2 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> Exists x1 frm) ) ))
+
+                                        else
+                                            matchFormulasHelper meq (x1 :: lbound) (x2 :: rbound) f1 f2
+                                                |> Result.map (\( xs, ys, ( errs, cap, mfrm ) ) -> ( xs, ys ++ [ ( Var x1, Var x2 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> Exists x1 frm) ) ))
 
                                     _ ->
                                         err ("Operator mismatch: '∃' vs. '" ++ Formula.displayOperator rop ++ "'")
@@ -649,39 +767,36 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                             ForAll x1 f1 ->
                                 case arg2 of
                                     ForAll x2 f2 ->
-                                        case matchFormulasHelper (x1 :: lbound) (x2 :: rbound) f1 f2 of
-                                            Ok ( xs, ys, rref ) ->
-                                                Ok ( xs, ys ++ [ ( Var x1, Var x2 ) ], Utils.appendTuples ref rref )
+                                        if Formula.abstract x2 then
+                                            matchFormulasHelper meq (x2 :: lbound) (x1 :: rbound) f1 f2
+                                                |> Result.map
+                                                    (\( xs, ys, ( errs, cap, mfrm ) ) ->
+                                                        ( xs, ys ++ [ ( Var x2, Var x1 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> ForAll x2 frm) ) )
+                                                    )
 
-                                            Err pair ->
-                                                Err pair
+                                        else if Formula.abstract x1 && Formula.specificFormula f1 then
+                                            -- flip arguments for recursive call
+                                            matchFormulasHelper meq (x1 :: lbound) (x2 :: rbound) f2 f1
+                                                |> Result.map (\( xs, ys, ( errs, cap, mfrm ) ) -> ( xs, ys ++ [ ( Var x1, Var x2 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> ForAll x1 frm) ) ))
+
+                                        else
+                                            matchFormulasHelper meq (x1 :: lbound) (x2 :: rbound) f1 f2
+                                                |> Result.map (\( xs, ys, ( errs, cap, mfrm ) ) -> ( xs, ys ++ [ ( Var x1, Var x2 ) ], ( errs, cap, mfrm |> Maybe.map (\frm -> ForAll x1 frm) ) ))
 
                                     _ ->
                                         err ("Operator mismatch: '∀' vs. '" ++ Formula.displayOperator rop ++ "'")
 
                             _ ->
-                                matchFormulasHelper lbound rbound arg1 arg2
+                                matchFormulasHelper meq lbound rbound arg1 arg2
                     )
                     lhsargs
                     rhsargs
                     |> List.foldl
-                        (\x state ->
-                            case state of
-                                Err e1 ->
-                                    Err e1
-
-                                Ok ( xs1, ys1, ref1 ) ->
-                                    case x of
-                                        Err e2 ->
-                                            Err e2
-
-                                        Ok ( xs2, ys2, ref2 ) ->
-                                            Ok ( xs1 ++ xs2, ys1 ++ ys2, Utils.appendTuples ref1 ref2 )
-                        )
-                        (Ok ( [], [], ( [], [] ) ))
+                        (Result.map2 (\( xs2, ys2, ( err2, cap2, mfrm2 ) ) ( xs1, ys1, ( err1, cap1, mfrms ) ) -> ( xs1 ++ xs2, ys1 ++ ys2, ( err1 ++ err2, cap1 ++ cap2, mfrms ++ [ mfrm2 ] ) )))
+                        (Ok ( [], [], ( [], [], [] ) ))
                     |> (\x ->
                             case x of
-                                Ok ( xs, ys, ref ) ->
+                                Ok ( xs, ys, ( errs, cap, mfrms ) ) ->
                                     let
                                         cxs =
                                             xs
@@ -691,11 +806,32 @@ matchFormulasHelper lbound rbound frm1 frm2 =
                                             ys
                                                 |> Utils.removeDuplicates
 
-                                        cref =
-                                            ref
-                                                |> Utils.removeDuplicatesInTuple
+                                        ( cerrs, ccap ) =
+                                            ( Utils.removeDuplicates errs, Utils.removeDuplicates cap )
+
+                                        mfrm =
+                                            mfrms
+                                                |> List.foldl (Maybe.map2 (\f fs -> fs ++ [ f ])) (Just [])
+                                                |> (\mfs ->
+                                                        case mop of
+                                                            Just op ->
+                                                                case mfs of
+                                                                    Just fs ->
+                                                                        Formula.reconstructFormula op fs
+
+                                                                    Nothing ->
+                                                                        Nothing
+
+                                                            Nothing ->
+                                                                case mfs of
+                                                                    Just (f :: []) ->
+                                                                        Just f
+
+                                                                    _ ->
+                                                                        Nothing
+                                                   )
                                     in
-                                    Ok ( cxs, cys, cref )
+                                    Ok ( cxs, cys, ( cerrs, ccap, mfrm ) )
 
                                 Err e ->
                                     Err e
@@ -703,21 +839,21 @@ matchFormulasHelper lbound rbound frm1 frm2 =
     in
     -- if formulas are equal, we do not need any substitutions
     if frm1 == frm2 then
-        Ok ( [], [], refd frm1 frm2 )
+        Ok ( [], [], ( [], [], Nothing ) )
 
     else
         case mqargs of
             Just ( qargs1, qargs2 ) ->
-                recur qargs1 qargs2
+                recur qargs1 qargs2 Nothing
 
             Nothing ->
                 if Rule.abstractPredConst frm1 then
                     -- trivial case: a placeholder matches any formula!
-                    Ok ( [ ( frm1, frm2 ) ], [], refd frm1 frm2 )
+                    Ok ( [ ( frm1, frm2 ) ], [], ( [], [], Nothing ) )
 
                 else if op1 == op2 && List.length args1 == List.length args2 then
                     -- operators match, recursively match args
-                    recur args1 args2
+                    recur args1 args2 (Just op1)
 
                 else
                     -- operators do not match!
@@ -729,11 +865,15 @@ matchFormulasHelper lbound rbound frm1 frm2 =
 -- returns list of
 -- *) found fact
 -- *) allowed termsubsts
--- *) required substitutions (on formula & term level), captured/referenced vars
+-- *) required substitutions (on formula & term level), and triple (not matchable termsubst, capturing substitutions, maybe generalized formula)
 
 
-findFact : Bool -> List Fact -> Abstract -> List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List String, List String ) ) )
-findFact q fs afrm =
+findFact : Bool -> List Fact -> MarkedAbstract -> List TermSubst -> List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) ) )
+findFact q fs mafrm callowedtsubsts =
+    let
+        ( m, afrm ) =
+            mafrm
+    in
     case fs of
         [] ->
             []
@@ -741,19 +881,45 @@ findFact q fs afrm =
         x :: xs ->
             let
                 recur =
-                    findFact q xs afrm
+                    findFact q xs mafrm callowedtsubsts
 
                 linefact =
                     \f ->
                         let
-                            -- formula, allowed tsubst
+                            -- formula (containing placeholders), allowed tsubst
                             ( f1, fallowedtsubsts ) =
                                 f
+
+                            -- obtain terms t1 = t2 from allowed substs; currently only supported for conclusion vs. premise; only exactly one replacement supported; conclusion will be on lhs of matching and thus t1 has to be allowed replacement in conclusion; in more complex rules involving generalization the ordering (t1,t2) would have to be inferred from the premise instantiation order
+                            meq =
+                                case fallowedtsubsts of
+                                    ( xf, rf ) :: [] ->
+                                        case callowedtsubsts of
+                                            ( xc, rc ) :: [] ->
+                                                if xf == xc then
+                                                    Just ( rc, rf )
+
+                                                else
+                                                    Nothing
+
+                                            _ ->
+                                                Nothing
+
+                                    _ ->
+                                        Nothing
                         in
                         case x of
                             LineFact frm pos _ _ ->
-                                case matchFormulas f1 frm of
-                                    Ok ( fsubsts, tsubsts, ref ) ->
+                                let
+                                    matchresult =
+                                        if m then
+                                            matchFormulasGeneralized meq f1 frm
+
+                                        else
+                                            matchFormulas f1 frm
+                                in
+                                case matchresult of
+                                    Ok ( fsubsts, tsubsts, errcapmfrm ) ->
                                         let
                                             ( atsubsts, _ ) =
                                                 Formula.splitAbstractTermSubsts tsubsts
@@ -761,7 +927,7 @@ findFact q fs afrm =
                                             allowedtsubsts =
                                                 Formula.updateTermSubstsWithList atsubsts fallowedtsubsts
                                         in
-                                        ( x, allowedtsubsts, ( fsubsts, tsubsts, ref ) ) :: recur
+                                        ( x, allowedtsubsts, ( fsubsts, tsubsts, errcapmfrm ) ) :: recur
 
                                     Err ( details, ( rf1, rf2 ) ) ->
                                         recur
@@ -806,15 +972,15 @@ findFact q fs afrm =
                                             case mass of
                                                 Nothing ->
                                                     case con of
-                                                        Ok ( fsubsts2, tsubsts2, ref2 ) ->
-                                                            Just ( callowedtsubst, ( fsubsts2, tsubsts2, ref2 ) )
+                                                        Ok ( fsubsts2, tsubsts2, errcap2 ) ->
+                                                            Just ( callowedtsubst, ( fsubsts2, tsubsts2, errcap2 ) )
 
                                                         _ ->
                                                             Nothing
 
-                                                Just ( allowedassm, Ok ( fsubsts1, tsubsts1, ref1 ) ) ->
+                                                Just ( allowedassm, Ok ( fsubsts1, tsubsts1, ( errs1, cap1, mfrm1 ) ) ) ->
                                                     case con of
-                                                        Ok ( fsubsts2, tsubsts2, ref2 ) ->
+                                                        Ok ( fsubsts2, tsubsts2, ( errs2, cap2, mfrm2 ) ) ->
                                                             let
                                                                 tsubsts =
                                                                     tsubsts1 ++ tsubsts2
@@ -828,7 +994,7 @@ findFact q fs afrm =
                                                                 allowedtsubsts =
                                                                     allowedtsubst ++ callowedtsubst
                                                             in
-                                                            Just ( allowedtsubsts, ( fsubsts1 ++ fsubsts2, tsubsts, Utils.appendTuples ref1 ref2 ) )
+                                                            Just ( allowedtsubsts, ( fsubsts1 ++ fsubsts2, tsubsts, ( errs1 ++ errs2, cap1 ++ cap2, Nothing ) ) )
 
                                                         _ ->
                                                             Nothing
@@ -851,10 +1017,15 @@ findFact q fs afrm =
                             LineFact frm1 pos1 _ frm1assm ->
                                 let
                                     ass =
+                                        -- changes would be requires here if at some point the application is adapted to handle rules that actually allow to introduce multiple assumption; however, the automatic start of boxes would need to be changed
                                         case List.head assms of
                                             Just ( f1, tsubst1 ) ->
-                                                -- it was allowed to simply assume frm1 (if it was not assumed, that is obviously correct as well)
-                                                ( tsubst1, matchFormulas f1 frm1 )
+                                                -- here we could allow that even though a rule allows to introduce an assumption the line is also accepted if it was NOT assumed; in the current implementation this does not make sense, since boxes are opened automatically by starting an assumption
+                                                if frm1assm then
+                                                    ( tsubst1, matchFormulas f1 frm1 )
+
+                                                else
+                                                    ( [], Err ( "Fact '" ++ Formula.displayFormula q frm1 ++ "' needs to be an assumption!", ( frm1, frm1 ) ) )
 
                                             Nothing ->
                                                 -- no assumptions to match with, i.e., block does not allow any assumptions
@@ -863,7 +1034,7 @@ findFact q fs afrm =
                                                     ( [], Err ( "Fact '" ++ Formula.displayFormula q frm1 ++ "' is not allowed to be an assumption!", ( frm1, frm1 ) ) )
 
                                                 else
-                                                    ( [], Ok ( [], [], ( [], [] ) ) )
+                                                    ( [], Ok ( [], [], ( [], [], Nothing ) ) )
                                 in
                                 matchconclusion (Just ass)
 
@@ -894,8 +1065,8 @@ findFact q fs afrm =
                                             |> List.map Tuple.first
                                 in
                                 case Maybe.map2 (matchBlock assms c illegalexport) first last of
-                                    Just (Just ( allowedtsubsts, ( fsubsts, tsubsts, ref ) )) ->
-                                        ( x, allowedtsubsts, ( fsubsts, tsubsts ++ blockvarsubsts, ref ) ) :: recur
+                                    Just (Just ( allowedtsubsts, ( fsubsts, tsubsts, errcap ) )) ->
+                                        ( x, allowedtsubsts, ( fsubsts, tsubsts ++ blockvarsubsts, errcap ) ) :: recur
 
                                     _ ->
                                         recur
@@ -908,14 +1079,15 @@ findFact q fs afrm =
                     linefact frm
 
                 AbstractBlock vs assms c ->
+                    -- marking blocks currently not supported
                     blockfact vs assms c
 
 
 
--- processes list of 'findFact' results, returns (fact positions [deps], rule version) upon success
+-- processes list of 'findFact' results, returns (fact positions [deps], generalized formulas, rule version) upon success
 
 
-processFoundFacts : Bool -> PremiseType -> List ( Int, Abstract ) -> ( List TermSubst, List TermSubst ) -> Set String -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List String, List String ) ) )) ) -> Result String ( List FactPos, RuleVersion )
+processFoundFacts : Bool -> PremiseType -> List ( Int, MarkedAbstract ) -> ( List TermSubst, List TermSubst ) -> Set String -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) ) )) ) -> Result String ( List FactPos, List Formula, RuleVersion )
 processFoundFacts q premtype afrms tsubstpair cbound xs =
     let
         -- (allowed termsubst in conclusion, termsubsts required to match with conclusion)
@@ -961,7 +1133,7 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                     _ ->
                         Default
 
-        -- list of list of ((fact, fsubsts), (abstract tsubsts, specific tsubsts, allowed tsubsts), captured vars)
+        -- list of list of ((i, fact, fsubsts), (abstract tsubsts, specific tsubsts, allowed tsubsts), (unmatchable termsubsts, capturing tsubsts, maybe formula for generalized form)
         ttss =
             List.map
                 (\( i, x ) ->
@@ -970,17 +1142,17 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                             List.map
                                 (\y ->
                                     case y of
-                                        ( fact, allowed, ( fsubsts, tsubsts, ref ) ) ->
+                                        ( fact, allowed, ( fsubsts, tsubsts, errcapmfrm ) ) ->
                                             ( ( i, fact, fsubsts )
                                             , tsubsts
                                                 |> (\ss ->
                                                         ss
                                                             ++ ctsubsts
                                                             |> Formula.splitAbstractTermSubsts
-                                                            -- note: do not apply Utils.removeEqPairs to be able to detect clash [x/x],[x/a]
+                                                            -- note: do not apply Utils.removeEqPairs to be able to detect clash [x/x],[x/a] !!!
                                                             |> (\( tsubs1, tsubs2 ) -> ( Utils.removeDuplicates tsubs1, Utils.removeDuplicates tsubs2, Utils.removeDuplicates allowed ))
                                                    )
-                                            , ref
+                                            , errcapmfrm
                                             )
                                 )
                                 fs
@@ -996,89 +1168,87 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
             Utils.instances ttss
 
         tryinstances =
-            -- e.g., topI has no fulfilled premises but also no errors
             if List.length instances == 0 && List.isEmpty errs then
-                Ok [ ( 0, None ) ]
-                -- e.g., disjI can have errors but at least one premise has to be fulfilled
+                -- no fulfilled premises but also no errors (e.g. topI)
+                Ok ( [ ( 0, None ) ], [] )
 
             else if List.length instances == 0 && not (List.isEmpty errs) then
-                Ok []
+                -- errors but at least one premise has to be fulfilled (e.g. disj)
+                Ok ( [], [] )
 
             else
                 List.foldl
                     (\instance inststate ->
                         let
                             ipos =
-                                List.map
-                                    (\( ( i, f, _ ), _, _ ) ->
-                                        ( i, getFactPos f )
-                                    )
-                                    instance
+                                instance
+                                    |> List.map
+                                        (\( ( i, f, _ ), _, _ ) ->
+                                            ( i, getFactPos f )
+                                        )
                                     |> List.sortBy Tuple.first
 
                             atsubsts =
-                                List.concatMap
-                                    (\( _, ( asubsts, _, _ ), _ ) -> asubsts)
-                                    instance
+                                instance
+                                    |> List.concatMap
+                                        (\( _, ( asubsts, _, _ ), _ ) -> asubsts)
 
                             tsubsts =
-                                List.concatMap
-                                    (\( _, ( _, tsubsts1, _ ), _ ) -> tsubsts1)
-                                    instance
+                                instance
+                                    |> List.concatMap
+                                        (\( _, ( _, tsubsts1, _ ), _ ) -> tsubsts1)
 
-                            ( ref1, ref2 ) =
+                            errsubsts =
+                                instance
+                                    |> List.concatMap
+                                        (\( _, _, ( err, _, _ ) ) -> err)
+
+                            capsubsts =
+                                instance
+                                    |> List.concatMap
+                                        (\( _, _, ( _, cap, _ ) ) -> cap)
+
+                            mfrms =
                                 instance
                                     |> List.map
-                                        (\( _, _, ref ) -> ref)
-                                    |> (\refs -> ( List.concatMap Tuple.first refs, List.concatMap Tuple.second refs ))
+                                        (\( _, _, ( _, _, mf ) ) -> mf)
 
-                            fsubstss =
-                                List.map
-                                    (\( ( _, _, fsubsts1 ), _, _ ) ->
-                                        fsubsts1
-                                    )
-                                    instance
+                            genfs =
+                                mfrms
+                                    |> List.foldl
+                                        (\mf gfs ->
+                                            case mf of
+                                                Just f ->
+                                                    gfs ++ [ f ]
+
+                                                Nothing ->
+                                                    gfs
+                                        )
+                                        []
 
                             fsubsts =
-                                List.concat fsubstss
+                                instance
+                                    |> List.concatMap
+                                        (\( ( _, _, fsubsts1 ), _, _ ) ->
+                                            fsubsts1
+                                        )
 
                             clashingfrm =
                                 Formula.clash fsubsts
 
-                            uref1 =
-                                ref1
-                                    |> Set.fromList
-                                    |> Formula.updateVarsWithList atsubsts
-
-                            uref2 =
-                                ref2
-                                    |> Set.fromList
-
-                            captured =
-                                Set.diff uref1 uref2
-
-                            allowedcap =
-                                Set.empty
-
-                            ucap =
-                                Set.diff captured allowedcap |> Set.toList
-
                             allowedtsubsts =
-                                List.concatMap
-                                    (\( _, ( _, _, allowed ), _ ) ->
-                                        allowed
-                                    )
-                                    instance
+                                instance
+                                    |> List.concatMap
+                                        (\( _, ( _, _, allowed ), _ ) ->
+                                            allowed
+                                        )
                                     |> List.map (Formula.updateTermSubstWithList atsubsts)
 
                             ctsubstu =
                                 -- update only with atsubsts since we want an abstract form, e.g. [?t2/x]
                                 Formula.updateTermSubstsWithList atsubsts mctsubst
 
-                            ctsususus =
-                                Formula.displayTermSubsts ctsubstu ++ " / " ++ Formula.displayTermSubsts mctsubst
-
-                            -- list of illegal substitutions, i.e., terms that should not be replaced (according to rules)
+                            -- list of illegal substitutions, i.e., terms that should not be replaced (according to used rule)
                             illegal =
                                 let
                                     -- clashes irrelevant for illegal check
@@ -1106,30 +1276,11 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                                                     x == x1 && Formula.abstractTerm y1 && not (List.member y testcb)
                                                 )
                                                 allowedtsubsts
-
-                                    allowedinspecial =
-                                        \sub special -> List.member sub special
-
-                                    allowedinabstractspecial =
-                                        \( x, y ) special ->
-                                            List.any
-                                                (\( x1, y1 ) ->
-                                                    x == x1 && Formula.abstractTerm y1 && not (List.member y testcb)
-                                                )
-                                                special
                                 in
                                 case ctsubstu of
                                     [] ->
                                         -- everything illegal that is not contained in allowedtsubsts (prems)
-                                        let
-                                            special =
-                                                allowedtsubsts
-                                                    |> Formula.clash
-                                                    |> List.filter (\( x, _ ) -> Formula.abstractTerm x)
-                                                    |> List.map Tuple.second
-                                                    |> Utils.tuples
-                                        in
-                                        List.filter (\sub -> not (allowedinprems sub || allowedinabstractprems sub || allowedinspecial sub special || allowedinabstractspecial sub special)) ts
+                                        List.filter (\sub -> not (allowedinprems sub || allowedinabstractprems sub)) ts
 
                                     _ ->
                                         let
@@ -1138,19 +1289,8 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
 
                                             allowedinabstractcon =
                                                 \( x, y ) -> List.any (\ctsub -> x == Tuple.first ctsub && Formula.abstractTerm (Tuple.second ctsub) && not (List.member y testcb)) ctsubstu
-
-                                            -- special case for =e
-                                            -- given ALLOWED substs [x/?1], [y/?1] ==> allow [x/y] and [y/x]
-                                            -- "clashing allowed substs with abstract lhs"
-                                            special =
-                                                ctsubstu
-                                                    ++ allowedtsubsts
-                                                    |> Formula.clash
-                                                    |> List.filter (\( x, _ ) -> Formula.abstractTerm x)
-                                                    |> List.map Tuple.second
-                                                    |> Utils.tuples
                                         in
-                                        List.filter (\sub -> not (allowedinprems sub || allowedinabstractprems sub || allowedincon sub || allowedinabstractcon sub || allowedinspecial sub special || allowedinabstractspecial sub special)) ts
+                                        List.filter (\sub -> not (allowedinprems sub || allowedinabstractprems sub || allowedincon sub || allowedinabstractcon sub)) ts
 
                             -- list of clashing substitutions
                             clashing =
@@ -1171,52 +1311,143 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                                         "Clashing Term Substitutions: " ++ Formula.displayTermSubsts clashing
 
                                     illmsg =
-                                        "Illegal Term Substitution: " ++ Formula.displayTermSubsts illegal
+                                        case illegal of
+                                            elem :: [] ->
+                                                "Illegal Term Substitution: " ++ Formula.displayTermSubst elem
+
+                                            _ ->
+                                                "Illegal Term Substitutions: " ++ Formula.displayTermSubsts illegal
+
+                                    errmsg =
+                                        "Impossible Term Substitutions: " ++ Formula.displayTermSubsts errsubsts
 
                                     capturemsg =
-                                        "Variable Capturing: " ++ String.join "," ucap
+                                        case capsubsts of
+                                            elem :: [] ->
+                                                "Term Substitution leads to Variable Capturing: " ++ Formula.displayTermSubst elem
+
+                                            _ ->
+                                                "Term Substitutions lead to Variable Capturing: " ++ Formula.displayTermSubsts capsubsts
+
+                                    -- give user only the most helpful msg
+                                    -- from user perspective "illegal" and "impossible" are the same thing
+                                    uill =
+                                        (illegal ++ errsubsts)
+                                            |> Utils.removeDuplicates
+
+                                    uillmsg =
+                                        case uill of
+                                            elem :: [] ->
+                                                "Illegal Term Substitution: " ++ Formula.displayTermSubst elem
+
+                                            _ ->
+                                                "Illegal Term Substitutions: " ++ Formula.displayTermSubsts uill
                                 in
                                 case clashingfrm of
                                     [] ->
-                                        case illegal of
+                                        case capsubsts of
                                             [] ->
-                                                case clashing of
+                                                case uill of
                                                     [] ->
-                                                        case ucap of
+                                                        case clashing of
                                                             [] ->
-                                                                Ok ipos
+                                                                Ok ( ipos, genfs )
 
                                                             _ ->
-                                                                Err capturemsg
-
-                                                    _ ->
-                                                        case ucap of
-                                                            [] ->
                                                                 Err clashmsg
 
-                                                            _ ->
-                                                                Err (clashmsg ++ "; " ++ capturemsg)
+                                                    _ ->
+                                                        Err uillmsg
 
                                             _ ->
-                                                case clashing of
-                                                    [] ->
-                                                        case ucap of
-                                                            [] ->
-                                                                Err illmsg
-
-                                                            _ ->
-                                                                Err (illmsg ++ "; " ++ capturemsg)
-
-                                                    _ ->
-                                                        case ucap of
-                                                            [] ->
-                                                                Err (clashmsg ++ "; " ++ illmsg)
-
-                                                            _ ->
-                                                                Err (clashmsg ++ "; " ++ illmsg ++ "; " ++ capturemsg)
+                                                Err capturemsg
 
                                     _ ->
                                         Err clashfrmmsg
+
+                            {- -- full error msgs
+                               case clashingfrm of
+                                   [] ->
+                                       case illegal of
+                                           [] ->
+                                               case clashing of
+                                                   [] ->
+                                                       case errsubsts of
+                                                           [] ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Ok ( ipos, genfs )
+
+                                                                   _ ->
+                                                                       Err capturemsg
+
+                                                           _ ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err errmsg
+
+                                                                   _ ->
+                                                                       Err (errmsg ++ "; " ++ capturemsg)
+
+                                                   _ ->
+                                                       case errsubsts of
+                                                           [] ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err clashmsg
+
+                                                                   _ ->
+                                                                       Err (clashmsg ++ "; " ++ capturemsg)
+
+                                                           _ ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err (clashmsg ++ "; " ++ errmsg)
+
+                                                                   _ ->
+                                                                       Err (clashmsg ++ "; " ++ errmsg ++ "; " ++ capturemsg)
+
+                                           _ ->
+                                               case clashing of
+                                                   [] ->
+                                                       case errsubsts of
+                                                           [] ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err illmsg
+
+                                                                   _ ->
+                                                                       Err (illmsg ++ "; " ++ capturemsg)
+
+                                                           _ ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err (illmsg ++ "; " ++ errmsg)
+
+                                                                   _ ->
+                                                                       Err (illmsg ++ "; " ++ errmsg ++ "; " ++ capturemsg)
+
+                                                   _ ->
+                                                       case errsubsts of
+                                                           [] ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err (clashmsg ++ "; " ++ illmsg)
+
+                                                                   _ ->
+                                                                       Err (clashmsg ++ "; " ++ illmsg ++ "; " ++ capturemsg)
+
+                                                           _ ->
+                                                               case capsubsts of
+                                                                   [] ->
+                                                                       Err (clashmsg ++ "; " ++ illmsg ++ "; " ++ errmsg)
+
+                                                                   _ ->
+                                                                       Err (clashmsg ++ "; " ++ illmsg ++ "; " ++ errmsg ++ "; " ++ capturemsg)
+
+                                   _ ->
+                                       Err clashfrmmsg
+                            -}
                         in
                         -- err state is list of (ipos, errmsg)
                         case inststate of
@@ -1229,8 +1460,8 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                                             |> Err
 
                                     -- found succeeding instance, ignore previous errors & propagate success
-                                    Ok iposr ->
-                                        Ok iposr
+                                    Ok ( iposr, mfs ) ->
+                                        Ok ( iposr, mfs )
 
                             -- propagate success
                             suc ->
@@ -1252,10 +1483,10 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                 Err es ->
                     Err (printerr (List.map (\( ipos, msg ) -> ( List.map Tuple.second ipos, msg )) es))
 
-                Ok ipos ->
+                Ok ( ipos, genfs ) ->
                     case premtype of
                         All ->
-                            Ok ( List.map Tuple.second ipos, Default )
+                            Ok ( List.map Tuple.second ipos, genfs, Default )
 
                         Any ->
                             case List.head ipos of
@@ -1263,7 +1494,7 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                                     Err "processFoundFacts: Unreachable case!"
 
                                 Just ( i, pos ) ->
-                                    Ok ( [ pos ], getrulev i )
+                                    Ok ( [ pos ], genfs, getrulev i )
 
         _ ->
             case premtype of
@@ -1275,13 +1506,13 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
                         Err es ->
                             Err (printerr (List.map (\( ipos, msg ) -> ( List.map Tuple.second ipos, msg )) es))
 
-                        Ok ipos ->
+                        Ok ( ipos, genfs ) ->
                             case ipos of
                                 [] ->
                                     Err ("None of the possible facts were found: " ++ String.join ", " errs)
 
                                 ( i, pos ) :: _ ->
-                                    Ok ( [ pos ], getrulev i )
+                                    Ok ( [ pos ], genfs, getrulev i )
 
 
 
@@ -1295,22 +1526,27 @@ processFoundFacts q premtype afrms tsubstpair cbound xs =
 -- hence, not necessarily every missing/failing fact is included in resulting list!
 
 
-substFactsWithBackTracking : Bool -> Bool -> PremiseType -> List Fact -> ( Int, Abstract ) -> List ( Int, Abstract ) -> List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List String, List String ) ) ) -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List String, List String ) ) )) )
-substFactsWithBackTracking q heuristics premtype fs iafrm rest found =
+substFactsWithBackTracking : Bool -> Bool -> PremiseType -> List Fact -> ( Int, MarkedAbstract ) -> List ( Int, MarkedAbstract ) -> List TermSubst -> List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) ) ) -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) ) )) )
+substFactsWithBackTracking q heuristics premtype fs iafrm rest callowedtsubsts found =
     let
-        ( i, afrm ) =
+        ( i, ( m, afrm ) ) =
             iafrm
 
         recur =
-            \instrest ->
-                findFactsHelper q heuristics premtype fs instrest
+            \instrest ucallowed ->
+                findFactsHelper q heuristics premtype fs instrest ucallowed
     in
     case found of
         [] ->
-            ( i, Err afrm ) :: recur rest
+            ( i, Err afrm ) :: recur rest callowedtsubsts
 
-        ( fact, allowedtsubsts, ( fsubsts, tsubsts, captured ) ) :: alt ->
+        ( fact, allowedtsubsts, ( fsubsts, tsubsts, errcapmfrm ) ) :: alt ->
             let
+                atsubsts =
+                    tsubsts
+                        |> Formula.splitAbstractTermSubsts
+                        |> Tuple.first
+
                 instantiate =
                     \xs ->
                         let
@@ -1322,12 +1558,12 @@ substFactsWithBackTracking q heuristics premtype fs iafrm rest found =
                                 List.map Tuple.second xs
                         in
                         zs
-                            |> Rule.applyFrmSubsts fsubsts
-                            |> Rule.applyTermSubsts (tsubsts |> Formula.splitAbstractTermSubsts |> Tuple.first)
+                            |> Rule.applyFrmSubstsMarked fsubsts
+                            |> Rule.applyTermSubstsMarked atsubsts
                             |> List.map2 Tuple.pair ys
 
                 try =
-                    recur (instantiate rest)
+                    recur (instantiate rest) (Formula.updateTermSubstsWithList atsubsts callowedtsubsts)
 
                 succAll =
                     try
@@ -1351,16 +1587,16 @@ substFactsWithBackTracking q heuristics premtype fs iafrm rest found =
                             True
 
                 backtrack =
-                    substFactsWithBackTracking q heuristics premtype fs iafrm rest alt
+                    substFactsWithBackTracking q heuristics premtype fs iafrm rest callowedtsubsts alt
             in
             if succ then
                 -- find all potential matches
                 let
-                    m =
-                        ( fact, allowedtsubsts, ( fsubsts, tsubsts, captured ) )
+                    match =
+                        ( fact, allowedtsubsts, ( fsubsts, tsubsts, errcapmfrm ) )
 
                     -- obtain rest of matches recursively
-                    ms =
+                    matches =
                         case List.head backtrack of
                             Nothing ->
                                 []
@@ -1373,7 +1609,7 @@ substFactsWithBackTracking q heuristics premtype fs iafrm rest found =
                                     ( _, Ok h1 ) ->
                                         h1
                 in
-                ( i, Ok (m :: ms) ) :: try
+                ( i, Ok (match :: matches) ) :: try
 
             else
                 backtrack
@@ -1383,24 +1619,24 @@ substFactsWithBackTracking q heuristics premtype fs iafrm rest found =
 -- tries to find all required abstract facts 'afrms' in list of available facts 'fs'
 
 
-findFactsHelper : Bool -> Bool -> PremiseType -> List Fact -> List ( Int, Abstract ) -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List String, List String ) ) )) )
-findFactsHelper q heuristics premtype fs afrms =
+findFactsHelper : Bool -> Bool -> PremiseType -> List Fact -> List ( Int, MarkedAbstract ) -> List TermSubst -> List ( Int, Result Abstract (List ( Fact, List TermSubst, ( List FrmSubst, List TermSubst, ( List TermSubst, List TermSubst, Maybe Formula ) ) )) )
+findFactsHelper q heuristics premtype fs afrms callowedtsubsts =
     case afrms of
         [] ->
             []
 
-        x :: xs ->
+        _ ->
             let
                 ( next, rest ) =
                     if heuristics then
-                        Rule.getMostSpecificIndexedAbstractFact afrms
+                        Rule.getMostSpecificIndexedMarkedAbstractFact afrms
 
                     else
-                        ( Just x, xs )
+                        Rule.getNextIndexedMarkedAbstractFact afrms
 
                 recur =
                     \instrest ->
-                        findFactsHelper q heuristics premtype fs instrest
+                        findFactsHelper q heuristics premtype fs instrest callowedtsubsts
             in
             case next of
                 -- cannot happen (we already checked that afrms is non-empty!)
@@ -1408,21 +1644,24 @@ findFactsHelper q heuristics premtype fs afrms =
                     ( -1, Err (AbstractFormula ( PredConst "unhandledError@findFactsHelper", [] )) ) :: recur rest
 
                 Just afrm ->
-                    findFact q fs (Tuple.second afrm)
-                        |> substFactsWithBackTracking q heuristics premtype fs afrm rest
+                    findFact q fs (Tuple.second afrm) callowedtsubsts
+                        |> substFactsWithBackTracking q heuristics premtype fs afrm rest callowedtsubsts
 
 
 
 -- obtains fact positions (deps) and rule version (if possible)
 
 
-findFacts : Bool -> Bool -> List Fact -> IndexedRulePremises -> ( List TermSubst, List TermSubst ) -> Set String -> Result String ( List FactPos, RuleVersion )
+findFacts : Bool -> Bool -> List Fact -> IndexedMarkedPremises -> ( List TermSubst, List TermSubst ) -> Set String -> Result String ( List FactPos, List Formula, RuleVersion )
 findFacts q heuristics fs prems tsubstpair cbound =
     let
         ( premtype, afrms ) =
             prems
+
+        ( callowedtsubsts, _ ) =
+            tsubstpair
     in
-    findFactsHelper q heuristics premtype fs afrms
+    findFactsHelper q heuristics premtype fs afrms callowedtsubsts
         |> processFoundFacts q premtype afrms tsubstpair cbound
 
 
@@ -1430,11 +1669,15 @@ findFacts q heuristics fs prems tsubstpair cbound =
 -- matches 'frm' with 'rule' and returns fact positions (deps) and rule version
 
 
-matchRule : Bool -> Bool -> Formula -> Rule -> List Fact -> Result String ( List FactPos, RuleVersion )
+matchRule : Bool -> Bool -> Formula -> Rule -> List Fact -> Result String ( List FactPos, List Formula, RuleVersion )
 matchRule q heuristics frm rule fs =
     let
-        ( names, prems, conclusion ) =
+        markedrule =
             rule
+                |> Rule.markPremises
+
+        ( names, markedprems, conclusion ) =
+            markedrule
 
         name =
             case List.head names of
@@ -1456,10 +1699,10 @@ matchRule q heuristics frm rule fs =
                 case matchFormulas cfrm frm of
                     -- "successful" match using the following substitutions
                     -- note that every fsubst is of the form (placeholder -> instantiated formula), i.e., always abstract
-                    -- tsubsts non-empty only if cfrm contains specific part (e.g. allI, exI)
+                    -- tsubsts non-empty only if cfrm contains "specific part" (e.g., when quantifiers are introduced -- allI, exI)
                     -- - on formula level, e.g. 'matchFormulas P(?1) P(x)', yields only abstract tsubsts, e.g. ?1 -> x
                     -- - on both formula & term level, e.g. 'matchFormulas P(x) P(y)', yields specific tsubsts, e.g. x -> y (does never make sense: illegal)
-                    Ok ( fsubsts, tsubsts, ref ) ->
+                    Ok ( fsubsts, tsubsts, ( errsubsts, cap, _ ) ) ->
                         let
                             -- obtain left abstract and left specific part of tsubsts
                             ( atsubsts, ctsubsts ) =
@@ -1467,17 +1710,17 @@ matchRule q heuristics frm rule fs =
 
                             -- 1) instantiate premises (on formula level)
                             finst =
-                                Rule.applyFrmSubstsToPrems prems fsubsts
+                                Rule.applyFrmSubstsToMarkedPrems markedprems fsubsts
 
                             -- 2) instantiate premises (on term level)
                             tinst =
-                                Rule.applyTermSubstsToPrems finst atsubsts
+                                Rule.applyTermSubstsToMarkedPrems finst atsubsts
 
-                            -- also instantiate allowed substitution of conclusion (remains unaltered for default rules)
+                            -- 3) also instantiate allowed substitution of conclusion (remains unaltered for default rules)
                             updatedcallowedtsubsts =
                                 Formula.updateTermSubstsWithList atsubsts callowedtsubsts
 
-                            -- checks if term substitution (x,y) is allowed
+                            -- checks if a required term substitution (x,y) is allowed
                             isAllowed =
                                 \( x, y ) ->
                                     List.any
@@ -1499,52 +1742,29 @@ matchRule q heuristics frm rule fs =
                             -- term substitutions may clash (e.g. =i)
                             clashingterm =
                                 Formula.clash tsubsts
-
-                            ( ref1, ref2 ) =
-                                ref
-
-                            uref1 =
-                                ref1
-                                    |> Set.fromList
-                                    |> Formula.updateVarsWithList atsubsts
-
-                            uref2 =
-                                ref2
-                                    |> Set.fromList
-
-                            captured =
-                                Set.union (Set.diff uref1 uref2) (Set.diff uref2 uref1)
-
-                            -- when matching with abstractly quantified formula, e.g., ∃?1.ϕ, replacement of ?1 is allowed to get captured
-                            allowedcap =
-                                Formula.outermostAbstractBoundVar cfrm
-                                    |> Maybe.map (Formula.updateVarWithList atsubsts)
-
-                            ucap =
-                                (case allowedcap of
-                                    Just c ->
-                                        Set.remove c captured
-
-                                    Nothing ->
-                                        captured
-                                )
-                                    |> Set.toList
                         in
                         if List.isEmpty clashingfrm then
-                            if List.isEmpty illegal then
-                                if List.isEmpty clashingterm then
-                                    case ucap of
+                            case cap of
+                                [] ->
+                                    case (illegal ++ errsubsts) |> Utils.removeDuplicates of
                                         [] ->
-                                            Ok ( tinst, ( updatedcallowedtsubsts, tsubsts ) )
+                                            if List.isEmpty clashingterm then
+                                                Ok ( tinst, ( updatedcallowedtsubsts, tsubsts ) )
 
-                                        vs ->
-                                            Err ("Variable Capturing: " ++ String.join "," vs)
+                                            else
+                                                Err ("Clashing Term Substitutions: " ++ Formula.displayTermSubsts clashingterm)
 
-                                else
-                                    Err ("Clashing Term Substitutions: " ++ Formula.displayTermSubsts clashingterm)
+                                        ill :: [] ->
+                                            Err ("Illegal Term Substitution: " ++ Formula.displayTermSubst ill)
 
-                            else
-                                Err ("Illegal Term Substitutions: " ++ Formula.displayTermSubsts illegal)
+                                        ills ->
+                                            Err ("Illegal Term Substitutions: " ++ Formula.displayTermSubsts ills)
+
+                                c :: [] ->
+                                    Err ("Term Substitution leads to Variable Capturing: " ++ Formula.displayTermSubst c)
+
+                                _ ->
+                                    Err ("Term Substitutions lead to Variable Capturing: " ++ Formula.displayTermSubsts cap)
 
                         else
                             Err ("Clashing Formula Substitutions: " ++ Formula.displayFrmSubsts q clashingfrm)
@@ -1561,10 +1781,10 @@ matchRule q heuristics frm rule fs =
 
                     Ok ( instprems, substpair ) ->
                         let
-                            ( premtype, afrms ) =
+                            ( premtype, markedafrms ) =
                                 instprems
                         in
-                        findFacts q heuristics fs ( premtype, List.indexedMap Tuple.pair afrms ) substpair (Formula.boundVars (Tuple.first con))
+                        findFacts q heuristics fs ( premtype, List.indexedMap Tuple.pair markedafrms ) substpair (Formula.boundVars (Tuple.first con))
     in
     case conclusion of
         Conclusion cfrm ->
@@ -1579,11 +1799,11 @@ matchRule q heuristics frm rule fs =
                         Err msg2 ->
                             Err ("Every possible instantiation failed:\n1. " ++ msg1 ++ "\n2. " ++ msg2)
 
-                        Ok ( pos, _ ) ->
-                            Ok ( pos, V2 )
+                        Ok ( pos, genfs, _ ) ->
+                            Ok ( pos, genfs, V2 )
 
-                Ok ( pos, _ ) ->
-                    Ok ( pos, V1 )
+                Ok ( pos, genfs, _ ) ->
+                    Ok ( pos, genfs, V1 )
 
 
 
@@ -1671,7 +1891,7 @@ checker q heuristics sub problem state =
             case jfc of
                 Premise ->
                     if List.member frm prems then
-                        succ nodeps Default
+                        succ nodeps [] Default
 
                     else
                         error ("'" ++ Formula.displayFormula q frm ++ "'" ++ " is not a premise!")
@@ -1680,12 +1900,12 @@ checker q heuristics sub problem state =
                 Assumption ->
                     -- no assumptions in outermost block
                     if level > 0 && blockbegin then
-                        succ assmdeps Default
+                        succ assmdeps [] Default
 
                     else
                         error "Assumptions are only allowed at the beginning of a box!"
 
-                JRule s ->
+                RuleName s ->
                     case Rule.getRule sub s of
                         Nothing ->
                             error ("There is no rule named '" ++ s ++ "'!")
@@ -1695,8 +1915,8 @@ checker q heuristics sub problem state =
                                 Err msg ->
                                     error msg
 
-                                Ok ( pos, rulev ) ->
-                                    succ (rfct pos) rulev
+                                Ok ( pos, genfs, rulev ) ->
+                                    succ (rfct pos) genfs rulev
 
         Block vs ps ->
             case ps of
@@ -1811,8 +2031,8 @@ redundancyStep fp xs =
 
         _ :: ys ->
             case f of
-                LineFact frm _ _ _ ->
-                    if referenced f fs || bp == BlockEnd || bp == BlockBeginEnd then
+                LineFact frm _ _ assumed ->
+                    if referenced f fs || bp == BlockBegin && assumed || bp == BlockEnd || bp == BlockBeginEnd then
                         ( ys, lrs ++ [ False ], brs )
 
                     else
@@ -1892,7 +2112,7 @@ addRedundancyWarningLine pcs bs =
                             \z -> z :: addRedundancyWarningLine ys xs
                     in
                     case y of
-                        LineSuccess _ _ ->
+                        LineSuccess _ _ _ ->
                             if x then
                                 recur w
 
@@ -1997,4 +2217,4 @@ buildAndQuickCheck heuristics sub cfg g ls =
 
                     Ok x ->
                         stateToResult x
-                            |> proofQED
+                            |> resultQED

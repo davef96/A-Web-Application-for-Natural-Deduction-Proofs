@@ -7,8 +7,6 @@ import Rule exposing (..)
 import Test exposing (..)
 
 
-
-
 suite : Test
 suite =
     describe "ReplaceFormula"
@@ -20,7 +18,7 @@ suite =
                             PredConst "1"
 
                         fsubst =
-                            (PredConst "1", Neg (PredConst "P"))
+                            ( PredConst "1", Neg (PredConst "P") )
 
                         m =
                             replaceSubFormula fsubst x
@@ -36,7 +34,7 @@ suite =
                             Neg (PredConst "1")
 
                         fsubst =
-                            (PredConst "1", Neg (PredConst "P"))
+                            ( PredConst "1", Neg (PredConst "P") )
 
                         m =
                             replaceSubFormula fsubst x
@@ -52,7 +50,7 @@ suite =
                             ForAll "1" (PredConst "1")
 
                         fsubst =
-                            (PredConst "1", Neg (PredConst "P"))
+                            ( PredConst "1", Neg (PredConst "P") )
 
                         m =
                             replaceSubFormula fsubst x
@@ -68,7 +66,7 @@ suite =
                             Exists "1" (PredConst "1")
 
                         fsubst =
-                            (PredConst "1", Neg (PredConst "P"))
+                            ( PredConst "1", Neg (PredConst "P") )
 
                         m =
                             replaceSubFormula fsubst x
@@ -77,6 +75,5 @@ suite =
                             Exists "1" (Neg (PredConst "P"))
                     in
                     Expect.equal m expect
-
             ]
         ]

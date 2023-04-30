@@ -3,9 +3,10 @@ module UtilsTests exposing (suite)
 import Expect exposing (Expectation)
 import Fuzz exposing (Fuzzer, int, list, string)
 import Rule exposing (..)
+import Set
 import Test exposing (..)
 import Utils exposing (..)
-import Set
+
 
 
 --extractSingle : Int -> List a -> Maybe a
@@ -25,11 +26,11 @@ suite =
                     let
                         m =
                             tuples [ 1, 2, 3 ]
-                            |> Set.fromList
+                                |> Set.fromList
 
                         expect =
-                            [(1,2), (1,3), (2,3), (2,1), (3,1), (3,2)]
-                            |> Set.fromList
+                            [ ( 1, 2 ), ( 1, 3 ), ( 2, 3 ), ( 2, 1 ), ( 3, 1 ), ( 3, 2 ) ]
+                                |> Set.fromList
                     in
                     Expect.equal m expect
             ]

@@ -1,4 +1,4 @@
-module Main exposing (..)
+port module Main exposing (main)
 
 import Browser
 import Browser.Dom as Dom
@@ -45,7 +45,20 @@ init _ =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.none
+    receiveCaretPos ReceivedCaretPosFromJS
+
+
+
+-- PORTS (for communicating with JS)
+
+
+port requestCaretPos : String -> Cmd msg
+
+
+port requestCaretCorrection : Json.Encode.Value -> Cmd msg
+
+
+port receiveCaretPos : (Json.Encode.Value -> msg) -> Sub msg
 
 
 
@@ -63,6 +76,8 @@ type Key
     | Home
     | Up
     | Down
+    | Left
+    | Right
     | Del
     | Other
 
@@ -99,8 +114,14 @@ mapToKey code =
         36 ->
             Home
 
+        37 ->
+            Left
+
         38 ->
             Up
+
+        39 ->
+            Right
 
         40 ->
             Down
@@ -130,6 +151,8 @@ type LineMod
 
 type BoxMod
     = SplitBox
+    | EndBox
+    | ExtendBox
 
 
 type Field
@@ -170,6 +193,7 @@ type Msg
     | MainPage -- go back to main page
     | ProofSelected File -- finished selecting proof txt as a result from ToolEvent 'Import'
     | ProofLoaded String -- finished loading data from selected file
+    | ReceivedCaretPosFromJS Json.Encode.Value
     | NOP
 
 
@@ -178,8 +202,9 @@ type Msg
 
 
 updateGoal : Config -> GoalType -> GoalType
-updateGoal cfg =
-    Keywords.replaceKeywords cfg.replacesc cfg.replacekw cfg.replacegreek
+updateGoal cfg goal =
+    goal
+        |> Keywords.replaceKeywords cfg.replacesc cfg.replacekw cfg.replacegreek
 
 
 
@@ -190,8 +215,9 @@ updateLinesPart : Bool -> Config -> Int -> String -> RawProof -> RawProof
 updateLinesPart part cfg n s proof =
     let
         u =
-            Keywords.replaceKeywords cfg.replacesc cfg.replacekw cfg.replacegreek s
+            s
 
+        --Keywords.replaceKeywords cfg.replacesc cfg.replacekw cfg.replacegreek s
         edit =
             if part then
                 EditFormula u
@@ -253,19 +279,30 @@ deleteLine n proof =
 
 -- deletes line 'n' if 'frm' empty
 -- instead of directly removing the line with 'RemoveLineIfEmpty', the check for emptiness is done after 'getLine' in order to update the focus accordingly
--- if 'split' is true and the line is inside a block, the block will get split (instead of removing the line)
+-- leave block instead of deleting if criteria met
 
 
 deleteLineIfEmpty : Bool -> Int -> Model -> ( Model, Cmd Msg )
-deleteLineIfEmpty split n model =
+deleteLineIfEmpty leaveblock n model =
     case getLine n model.proof of
         Just ( frm, _, inblock ) ->
             if String.isEmpty frm then
-                if split && inblock then
+                -- leave block instead of deleting when line ends block
+                if leaveblock && endsBlock model.proof n then
                     ( { model | proof = splitRawProof n model.proof }, focusElement (frmId n) )
 
                 else
-                    ( { model | proof = updateRawProof n RemoveLine model.proof }, focusElement (frmId (n - 1)) )
+                    let
+                        newproof =
+                            updateRawProof n RemoveLine model.proof
+                    in
+                    ( { model | proof = newproof }
+                    , if proofLength newproof >= n then
+                        focusElement (frmId n)
+
+                      else
+                        focusElement (frmId (n - 1))
+                    )
 
             else
                 ( model, Cmd.none )
@@ -318,18 +355,38 @@ goalId =
     "goal"
 
 
+frmIdBase : String
+frmIdBase =
+    "frm"
+
+
 frmId : Int -> String
 frmId n =
     if n == 0 then
         goalId
 
     else
-        "frm" ++ String.fromInt n
+        frmIdBase ++ String.fromInt n
+
+
+lineMenuId : Int -> String
+lineMenuId n =
+    lineMenuIdBase ++ String.fromInt n
+
+
+lineMenuIdBase : String
+lineMenuIdBase =
+    "linemenu"
+
+
+jfcIdBase : String
+jfcIdBase =
+    "jfc"
 
 
 jfcId : Int -> String
 jfcId n =
-    "jfc" ++ String.fromInt n
+    jfcIdBase ++ String.fromInt n
 
 
 focusElement : String -> Cmd Msg
@@ -337,8 +394,18 @@ focusElement id =
     Task.attempt (\_ -> NOP) (Dom.focus id)
 
 
+defocusElement : String -> Cmd Msg
+defocusElement id =
+    Task.attempt (\_ -> NOP) (Dom.blur id)
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    -- do NOT do ANY keyword/shortcut replacements directly; instead:
+    -- 1) request caret position
+    -- 2) when caret position is received, call replacement function for this element
+    -- 3) correct the caret position by taking replacement length into account (e.g., keyword 'and' is of length 3; symbol '∧' is of length 1; hence, caret := caret - 2)
+    -- 4) request setting the corrected caret position
     case msg of
         Goal g ->
             let
@@ -370,12 +437,19 @@ update msg model =
                                         Err _ ->
                                             oldcfg
             in
-            ( { model | cfg = newcfg, goal = updateGoal newcfg g, proof = updateAllLines newcfg model.proof, gsize = goalSize g }, Cmd.none )
+            -- only the caret position of the goal field matters here!
+            ( { model | cfg = newcfg, goal = g, proof = updateAllLines newcfg model.proof, gsize = goalSize g }, requestCaretPos goalId )
 
         BoxEvent n e ->
             case e of
                 SplitBox ->
                     ( { model | proof = splitRawProof n model.proof }, focusElement (frmId n) )
+
+                EndBox ->
+                    ( { model | proof = endBlock n model.proof }, focusElement (frmId n) )
+
+                ExtendBox ->
+                    ( { model | proof = extendBlock n model.proof }, focusElement (frmId n) )
 
         LineEvent n e ->
             case e of
@@ -395,7 +469,7 @@ update msg model =
 
                                               else
                                                 -- we would lose focus when blocks get splitted
-                                                focusElement (frmId n)
+                                                Cmd.batch [ focusElement (frmId n), requestCaretPos (frmId n) ]
                                             )
                                        )
                            )
@@ -415,7 +489,7 @@ update msg model =
                                                 focusElement (frmId n)
 
                                               else
-                                                focusElement (jfcId n)
+                                                Cmd.batch [ focusElement (jfcId n), requestCaretPos (jfcId n) ]
                                             )
                                        )
                            )
@@ -424,24 +498,11 @@ update msg model =
                     ( { model | proof = deleteLine n model.proof }, focusElement (frmId (n - 1)) )
 
         KeyEvent n field code ->
-            let
-                -- let element focus itself (would lose it upon indentation, etc.)
-                cmd =
-                    case field of
-                        FieldFrm ->
-                            focusElement (frmId n)
-
-                        FieldJfc ->
-                            focusElement (jfcId n)
-
-                        FieldGoal ->
-                            Cmd.none
-            in
             case mapToKey code of
                 BackSpace ->
                     case field of
-                        -- field empty and outermost level ==> delete line
-                        -- field empty and within block ==> split block
+                        -- field empty ==> delete line
+                        -- if last line in block, leave block before deleting
                         FieldFrm ->
                             deleteLineIfEmpty True n model
 
@@ -483,7 +544,15 @@ update msg model =
 
                 Esc ->
                     -- remove focus
-                    ( model, focusElement (frmId n) )
+                    case field of
+                        FieldFrm ->
+                            ( model, defocusElement (frmId n) )
+
+                        FieldJfc ->
+                            ( model, defocusElement (jfcId n) )
+
+                        FieldGoal ->
+                            ( model, defocusElement goalId )
 
                 Enter ->
                     ( { model | proof = addLine n model.proof }, focusElement (frmId (n + 1)) )
@@ -525,7 +594,8 @@ update msg model =
                     clearProof model
 
                 MergeBlocks ->
-                    ( { model | proof = mergeBlocks model.proof }, Cmd.none )
+                    --( { model | proof = mergeBlocks model.proof }, Cmd.none )
+                    ( model, Cmd.none )
 
                 ToggleLogic ->
                     ( switchLanguage model, Cmd.none )
@@ -659,8 +729,108 @@ update msg model =
         MainPage ->
             ( { model | latex = False, error = False, help = False }, Cmd.none )
 
+        ReceivedCaretPosFromJS value ->
+            case Json.Decode.decodeValue caretDecoder value of
+                Ok data ->
+                    case idToField data.id of
+                        Just ( n, field ) ->
+                            case field of
+                                FieldGoal ->
+                                    let
+                                        ( newgoal, cmd ) =
+                                            replacementWithCaretCorrection model.cfg goalId data.caret model.goal
+                                    in
+                                    ( { model | goal = newgoal }, cmd )
+
+                                _ ->
+                                    updateLineWithCaretCorrection model n field data.caret
+
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                Err err ->
+                    ( model, Cmd.none )
+
         NOP ->
             ( model, Cmd.none )
+
+
+updateLineWithCaretCorrection : Model -> Int -> Field -> Int -> ( Model, Cmd Msg )
+updateLineWithCaretCorrection model n field caret =
+    case getLine n model.proof of
+        Just ( frm, jfc, _ ) ->
+            let
+                ( id, s, edit ) =
+                    case field of
+                        FieldGoal ->
+                            ( "invalid", "", EditFormula )
+
+                        FieldFrm ->
+                            ( frmId n, frm, EditFormula )
+
+                        FieldJfc ->
+                            ( jfcId n, jfc, EditJustification )
+
+                ( new, cmd ) =
+                    replacementWithCaretCorrection model.cfg id caret s
+            in
+            ( { model | proof = updateRawProof n (edit new) model.proof }, cmd )
+
+        Nothing ->
+            ( model, Cmd.none )
+
+
+replacementWithCaretCorrection : Config -> String -> Int -> String -> ( String, Cmd Msg )
+replacementWithCaretCorrection cfg id caret s =
+    s
+        |> Keywords.replaceSingle cfg.replacesc cfg.replacekw cfg.replacegreek
+        |> (\( updated, diff, replaced ) ->
+                if replaced then
+                    ( updated, requestCaretCorrection (encodeCorrection id (caret - diff)) )
+
+                else
+                    ( s, Cmd.none )
+           )
+
+
+idToField : String -> Maybe ( Int, Field )
+idToField id =
+    if String.startsWith goalId id then
+        Just ( 0, FieldGoal )
+
+    else if String.startsWith frmIdBase id then
+        id
+            |> String.dropLeft (String.length frmIdBase)
+            |> String.toInt
+            |> Maybe.map (\n -> ( n, FieldFrm ))
+
+    else if String.startsWith jfcIdBase id then
+        id
+            |> String.dropLeft (String.length jfcIdBase)
+            |> String.toInt
+            |> Maybe.map (\n -> ( n, FieldJfc ))
+
+    else
+        Nothing
+
+
+type alias CaretType =
+    { id : String
+    , caret : Int
+    }
+
+
+encodeCorrection : String -> Int -> Json.Encode.Value
+encodeCorrection id caret =
+    Json.Encode.object
+        [ ( "id", Json.Encode.string id )
+        , ( "caret", Json.Encode.int caret )
+        ]
+
+
+caretDecoder : Json.Decode.Decoder CaretType
+caretDecoder =
+    Json.Decode.map2 CaretType (Json.Decode.field "id" Json.Decode.string) (Json.Decode.field "caret" Json.Decode.int)
 
 
 goToFirstLine : Model -> ( Model, Cmd Msg )
@@ -949,12 +1119,12 @@ rawProofToStringHelper start proof =
         RawBegin ps ->
             recur ps
                 |> Tuple.second
-                |> String.join ","
+                |> String.join "\n    , "
 
         RawBlock ps ->
             recur ps
                 |> Tuple.second
-                |> String.join ","
+                |> String.join "\n    , "
 
 
 rawProofToString : RawProof -> String
@@ -997,11 +1167,11 @@ configToString cfg =
 
 exportProofAsTxt : Model -> Cmd msg
 exportProofAsTxt model =
-    "goal =\n\t\""
+    "goal =\n    \""
         ++ model.goal
-        ++ "\"\n\nproof =\n\t[ "
+        ++ "\"\n\nproof =\n    [ "
         ++ rawProofToString model.proof
-        ++ "\n\t]\n\nconfig =\n\t{"
+        ++ "\n    ]\n\nconfig =\n    {"
         ++ configToString model.cfg
         ++ "}\n"
         |> saveTxt
@@ -1011,29 +1181,176 @@ exportProofAsTxt model =
 -- obtain subproofs for LaTeX logicproof
 
 
-getSubProofs : RawProof -> String
-getSubProofs proof =
+getSubProofs : Model -> BuildState -> Maybe CheckState -> String
+getSubProofs model buildstate mcheckstate =
     let
-        recur =
-            List.foldl
-                (\step str ->
-                    str ++ getSubProofs step
-                )
-                ""
+        checkstate =
+            case mcheckstate of
+                Just ( _, _, ( cs, _ ) ) ->
+                    cs
+
+                Nothing ->
+                    []
     in
-    case proof of
-        RawStep frm jfc ->
-            let
-                line =
-                    frm ++ " & $" ++ jfc ++ "$"
-            in
-            "\\\\\n" ++ line
-
-        RawBlock ps ->
-            "\\\\\n" ++ "\\begin{subproof}\n" ++ recur ps ++ "\n\\end{subproof}\n"
-
+    case model.proof of
         RawBegin ps ->
-            recur ps
+            getSubProofsHelper model.cfg.qtype ( ( 1, 0, "" ), buildstate, checkstate ) ps
+                |> (\( ( _, _, str ), _, _ ) -> str)
+
+        _ ->
+            "<~ Error obtaining subproofs! Invalid constructor. ~>"
+
+
+getSubProofsHelper : Bool -> ( ( Int, Int, String ), BuildState, List ProofCheck ) -> List RawProof -> ( ( Int, Int, String ), BuildState, List ProofCheck )
+getSubProofsHelper q =
+    List.foldl
+        (\step state ->
+            let
+                ( ( indent, i, str ), bs, cs ) =
+                    state
+
+                recurstate =
+                    ( ( indent + 1, i, "" ), bs, cs )
+
+                linestate =
+                    ( ( indent, i + 1, str ), bs, cs )
+
+                correctstate =
+                    \( ( _, ni, nstr ), nbs, ncs ) ->
+                        -- state after recursive call (block)
+                        ( ( indent, ni, str ++ nstr ), nbs, ncs )
+
+                wrapstr =
+                    \before after ( ( nindent, ni, nstr ), nbs, ncs ) ->
+                        ( ( nindent, ni, before ++ nstr ++ after ), nbs, ncs )
+
+                updateinfo =
+                    \nbs ncs ( ( nindent, ni, nstr ), _, _ ) ->
+                        ( ( nindent, ni, nstr ), nbs, ncs )
+
+                addstr =
+                    \add ->
+                        wrapstr "" add
+
+                indentation =
+                    String.repeat indent "\t"
+            in
+            case step of
+                RawStep frm jfc ->
+                    let
+                        line =
+                            Keywords.replaceUnicodeSymbols frm ++ "&" ++ Keywords.replaceAndEscapeUnicodeSymbols jfc
+
+                        defaultline =
+                            "\\\\\n" ++ indentation ++ line
+
+                        displayDep =
+                            \dep ->
+                                case dep of
+                                    None ->
+                                        ""
+
+                                    LineNo pos ->
+                                        String.fromInt pos
+
+                                    Range begin end ->
+                                        String.fromInt begin ++ "--" ++ String.fromInt end
+
+                        displayDeps =
+                            \deps ->
+                                deps
+                                    |> List.filter
+                                        (\d ->
+                                            case d of
+                                                None ->
+                                                    False
+
+                                                _ ->
+                                                    True
+                                        )
+                                    |> List.map displayDep
+                                    |> String.join ","
+                                    |> (\s -> " " ++ s)
+
+                        displayGenfs =
+                            \genfs ->
+                                genfs
+                                    |> Formula.displayFormulas q
+                                    |> Keywords.replaceUnicodeSymbols
+                                    |> (\gen -> " with $" ++ gen ++ "$")
+
+                        displayVer =
+                            \ver ->
+                                ver
+                                    |> ProofChecking.displayRuleVersion
+                                    |> (\v -> "$_" ++ v ++ "$")
+
+                        addIfNotNil =
+                            \xs sxs s ->
+                                if List.isEmpty xs then
+                                    s
+
+                                else
+                                    s ++ sxs
+
+                        addIfNotDefault =
+                            \ver s ->
+                                if ProofChecking.verNonDefault ver then
+                                    s ++ displayVer ver
+
+                                else
+                                    s
+
+                        addinfo =
+                            \deps genfs ver ->
+                                defaultline
+                                    |> addIfNotDefault ver
+                                    |> addIfNotNil deps (displayDeps deps)
+                                    |> addIfNotNil genfs (displayGenfs genfs)
+                                    |> addstr
+
+                        ( skip, rbs ) =
+                            case bs of
+                                (BuildOk varfix _) :: buildrest ->
+                                    ( varfix, buildrest )
+
+                                (BuildError _) :: buildrest ->
+                                    ( True, buildrest )
+
+                                (BuildWarning _ _) :: buildrest ->
+                                    ( False, buildrest )
+
+                                [] ->
+                                    ( False, [] )
+
+                        ( mcheck, checkrest ) =
+                            getCheckInfo i skip cs
+                    in
+                    case mcheck of
+                        Just (LineSuccess dependencies genforms version) ->
+                            linestate
+                                |> addinfo dependencies genforms version
+                                |> updateinfo rbs checkrest
+
+                        Just (LineQED dependencies genforms version) ->
+                            linestate
+                                |> addinfo dependencies genforms version
+                                |> updateinfo rbs checkrest
+
+                        _ ->
+                            -- ignore errors & warnings here; user wants to export ==> will get proof!
+                            linestate
+                                |> addstr defaultline
+                                |> updateinfo rbs checkrest
+
+                RawBlock ps ->
+                    getSubProofsHelper q recurstate ps
+                        |> wrapstr ("\\\\\n" ++ indentation ++ "\\begin{subproof}\n") ("\n" ++ indentation ++ "\\end{subproof}\n")
+                        |> correctstate
+
+                RawBegin ps ->
+                    getSubProofsHelper q recurstate ps
+        )
 
 
 
@@ -1045,13 +1362,9 @@ removeEmptyLines =
     String.replace "\n\\\\\n" "\n"
 
 
-
--- "∀x. P(x,y)" ==> "∀x.\\,P(x,y)"
-
-
-addDotSpace : String -> String
-addDotSpace =
-    String.replace ". " ".\\,"
+addSpace : String -> String
+addSpace =
+    String.replace " " "\\;"
 
 
 
@@ -1074,9 +1387,23 @@ removeEmptyMath =
     String.replace "$$" ""
 
 
-proofToLaTeX : Model -> String
-proofToLaTeX model =
-    ("% !TeX program = xelatex\n\n%\\usepackage{logicproof}\n%\\usepackage{unicode-math}\n\nGoal: $" ++ model.goal ++ "$\n\n\\begin{logicproof}{3}\n" ++ getSubProofs model.proof ++ "\n\\end{logicproof}") |> addDotSpace |> removeBrackets |> removeEmptyLines |> removeEmptyMath
+addSequentSpace : String -> String
+addSequentSpace =
+    String.replace "⊢" "\\;⊢\\;"
+
+
+
+-- currently just: "&" ==> " & "
+
+
+improveCodeReadability : String -> String
+improveCodeReadability =
+    String.replace "&" " & "
+
+
+proofToLaTeX : BuildState -> Maybe CheckState -> Model -> String
+proofToLaTeX buildstate mcheckstate model =
+    "%\\usepackage{logicproof}\n\n\\begin{center}\n" ++ ("$" ++ (Keywords.replaceUnicodeSymbols (addSequentSpace model.goal) ++ "$\n\n\\begin{logicproof}{3}\n" ++ getSubProofs model buildstate mcheckstate ++ "\n\\end{logicproof}") |> addSpace |> removeBrackets |> removeEmptyLines |> removeEmptyMath |> improveCodeReadability) ++ "\n\n\\end{center}"
 
 
 
@@ -1203,7 +1530,7 @@ addPremises model =
 
 goalSizeBase : Int
 goalSizeBase =
-    28
+    32
 
 
 lineSizeBase : Int
@@ -1213,7 +1540,7 @@ lineSizeBase =
 
 jfcSizeBase : Int
 jfcSizeBase =
-    13
+    11
 
 
 goalBuf : Int
@@ -1228,7 +1555,7 @@ lineBuf =
 
 jfcBuf : Int
 jfcBuf =
-    2
+    1
 
 
 lineSize : String -> Int
@@ -1259,20 +1586,26 @@ fieldSize base buf s =
         base
 
 
-linePlaceholder : Int -> String
-linePlaceholder n =
-    "Fact#" ++ String.fromInt n
+goalPlaceholder : String
+goalPlaceholder =
+    "Premise_1,...,Premise_n ⊢ Conclusion"
 
 
-jfcPlaceholder : Int -> String
-jfcPlaceholder n =
-    "Justification#" ++ String.fromInt n
+frmPlaceholder : String
+frmPlaceholder =
+    "Formula"
+
+
+jfcPlaceholder : String
+jfcPlaceholder =
+    "Justification"
 
 
 styledTable2 : String -> List (Attribute msg) -> List (Html msg) -> Html msg
 styledTable2 c =
     styled Html.Styled.table
-        [ border3 (px 1) dashed (hex "#000000")
+        [ fontFamily inherit
+        , border3 (px 1) dashed (hex "#000000")
         , backgroundColor (hex c)
         , padding2 (px 1) (px 3)
         ]
@@ -1281,7 +1614,8 @@ styledTable2 c =
 styledTable3 : String -> List (Attribute msg) -> List (Html msg) -> Html msg
 styledTable3 c =
     styled Html.Styled.table
-        [ border3 (px 2) solid (hex "#000000")
+        [ fontFamily inherit
+        , border3 (px 2) solid (hex "#000000")
         , borderRadius (px 5)
         , backgroundColor (hex c)
         , padding2 (px 1) (px 10)
@@ -1292,7 +1626,8 @@ styledTable3 c =
 styledTable1 : String -> List (Attribute msg) -> List (Html msg) -> Html msg
 styledTable1 c =
     styled Html.Styled.table
-        [ border3 (px 1) dotted (hex "#614070")
+        [ fontFamily inherit
+        , border3 (px 1) dotted (hex "#614070")
         , borderRadius (px 5)
         , backgroundColor (hex c)
         , padding2 (px 5) (px 10)
@@ -1302,7 +1637,8 @@ styledTable1 c =
 styledTd : Int -> List (Attribute msg) -> List (Html msg) -> Html msg
 styledTd n =
     styled Html.Styled.td
-        [ fontSize (px 16)
+        [ fontFamily inherit
+        , fontSize (px 16)
         , fontWeight bold
         , paddingRight (px (toFloat (n * 10) + 5))
         ]
@@ -1311,7 +1647,8 @@ styledTd n =
 toolbarButton : String -> String -> Bool -> List (Attribute msg) -> List (Html msg) -> Html msg
 toolbarButton c1 c2 hv =
     styled Html.Styled.button
-        ([ border (px 0)
+        ([ fontFamilies [ "Arial" ]
+         , border (px 0)
          , borderRadius (px 3)
          , lineHeight (px 30)
          , textAlign center
@@ -1345,11 +1682,14 @@ toolbarButton c1 c2 hv =
 backButton : String -> String -> List (Attribute msg) -> List (Html msg) -> Html msg
 backButton c1 c2 =
     styled Html.Styled.button
-        [ Css.position Css.relative
+        [ fontFamilies [ "Arial" ]
+        , Css.position Css.relative
         , Css.display Css.inlineBlock
         , border (px 0)
         , borderRadius (px 3)
         , lineHeight (px 30)
+        , minWidth (px 100)
+        , fontSize (px 14)
         , textAlign center
         , backgroundColor (hex c1)
         , padding2 (px 5) (px 10)
@@ -1374,7 +1714,8 @@ backButton c1 c2 =
 listButton : Float -> String -> String -> List (Attribute msg) -> List (Html msg) -> Html msg
 listButton w c1 c2 =
     styled Html.Styled.button
-        [ border (px 0)
+        [ fontFamilies [ "Arial" ]
+        , border (px 0)
         , borderRadius (px 0)
         , Css.width (px w)
         , lineHeight (px 16)
@@ -1402,13 +1743,16 @@ listButton w c1 c2 =
 paddedTd : List (Attribute msg) -> List (Html msg) -> Html msg
 paddedTd =
     styled Html.Styled.td
-        [ padding2 (px 0) (px 0) ]
+        [ fontFamily inherit
+        , padding2 (px 0) (px 0)
+        ]
 
 
 lineButton : String -> String -> Bool -> List (Attribute msg) -> List (Html msg) -> Html msg
 lineButton c1 c2 hv =
     styled Html.Styled.button
-        ([ border3 (px 1) solid (hex "#000000")
+        ([ fontFamilies [ "Arial" ]
+         , border3 (px 1) solid (hex "#000000")
          , borderRadius (px 3)
 
          --, Css.height (px 24)
@@ -1440,7 +1784,7 @@ lineButton c1 c2 hv =
 styledInput : List (Attribute msg) -> List (Html msg) -> Html msg
 styledInput =
     styled Html.Styled.input
-        [ fontFamily monospace
+        [ fontFamily inherit
         , hover
             [ border3 (px 2) solid (hex "#878686")
             ]
@@ -1450,7 +1794,7 @@ styledInput =
 styledCheck : List (Attribute msg) -> List (Html msg) -> Html msg
 styledCheck =
     styled Html.Styled.span
-        [ fontFamily monospace
+        [ fontFamily inherit
         , fontSize (px 20)
         , hover
             [ fontWeight bold
@@ -1461,7 +1805,7 @@ styledCheck =
 blockCheck : List (Attribute msg) -> List (Html msg) -> Html msg
 blockCheck =
     styled Html.Styled.span
-        [ fontFamily monospace
+        [ fontFamily inherit
         , fontSize (px 10)
         , hover
             [ fontWeight normal
@@ -1472,7 +1816,8 @@ blockCheck =
 dropdown : Float -> String -> String -> String -> List (Attribute msg) -> List (Html msg) -> List (Attribute msg) -> List (Html msg) -> Html msg
 dropdown w col1 col2 col3 attr1 html1 attr2 html2 =
     styled Html.Styled.div
-        [ Css.position Css.relative
+        [ fontFamilies [ "Arial" ]
+        , Css.position Css.relative
         , Css.display Css.inlineBlock
         , textAlign center
         , Css.hover
@@ -1485,7 +1830,8 @@ dropdown w col1 col2 col3 attr1 html1 attr2 html2 =
         []
         [ toolbarButton col1 col2 False attr1 html1
         , styled Html.Styled.div
-            [ Css.backgroundColor (Css.hex col3)
+            [ fontFamilies [ "Arial" ]
+            , Css.backgroundColor (Css.hex col3)
             , Css.position Css.absolute
             , Css.top <| Css.pct 100
             , Css.display Css.none
@@ -1500,7 +1846,8 @@ dropdown w col1 col2 col3 attr1 html1 attr2 html2 =
 dropdown1 : Float -> String -> String -> String -> List (Attribute msg) -> List (Html msg) -> List (Attribute msg) -> List (Html msg) -> Html msg
 dropdown1 w col1 col2 col3 attr1 html1 attr2 html2 =
     styled Html.Styled.div
-        [ Css.position Css.relative
+        [ fontFamilies [ "Arial" ]
+        , Css.position Css.relative
         , Css.display Css.inlineBlock
         , textAlign center
         , Css.hover
@@ -1513,7 +1860,8 @@ dropdown1 w col1 col2 col3 attr1 html1 attr2 html2 =
         []
         [ lineButton col1 col2 False attr1 html1
         , styled Html.Styled.div
-            [ Css.backgroundColor (Css.hex col3)
+            [ fontFamilies [ "Arial" ]
+            , Css.backgroundColor (Css.hex col3)
             , Css.position Css.absolute
             , Css.top <| Css.pct 100
             , Css.display Css.none
@@ -1528,8 +1876,8 @@ dropdown1 w col1 col2 col3 attr1 html1 attr2 html2 =
 popup : String -> String -> List (Attribute msg) -> List (Attribute msg) -> List (Attribute msg) -> List (Html msg) -> Html msg
 popup col1 col2 attr1 attr2 attr3 html2 =
     styled Html.Styled.div
-        [ padding2 (px 10) (px 10)
-        , fontFamily monospace
+        [ fontFamilies [ "NotoSansMono" ]
+        , padding2 (px 10) (px 10)
         , Css.position Css.fixed
         , Css.top (px 0)
         , Css.right (px 0)
@@ -1541,8 +1889,8 @@ popup col1 col2 attr1 attr2 attr3 html2 =
         [ backButton "#b3c2ff" "#95a7ed" ([ title "Go back to main page" ] ++ attr3) [ text "Go Back" ]
         , styled Html.Styled.div
             [ Css.position Css.absolute
-            , Css.width (pct 50)
-            , Css.height (pct 50)
+            , Css.width (pct 85)
+            , Css.height (pct 85)
             , Css.top (px 0)
             , Css.right (px 0)
             , Css.left (px 0)
@@ -1567,8 +1915,8 @@ popup col1 col2 attr1 attr2 attr3 html2 =
 globalDiv : List (Attribute msg) -> List (Html msg) -> Html msg
 globalDiv =
     styled Html.Styled.div
-        [ padding2 (px 10) (px 10)
-        , fontFamily monospace
+        [ fontFamilies [ "NotoSansMono" ]
+        , padding2 (px 10) (px 10)
         ]
 
 
@@ -1632,7 +1980,7 @@ view model =
             case mcheckstate of
                 Just ( _, _, ( pchk, _ ) ) ->
                     case List.head (List.reverse pchk) of
-                        Just (LineQED _ _) ->
+                        Just (LineQED _ _ _) ->
                             [ text "✓" ]
 
                         _ ->
@@ -1640,6 +1988,31 @@ view model =
 
                 _ ->
                     []
+
+        sepline =
+            "---------------------------------------"
+
+        goaltext =
+            "1) Entering the Proof Goal:\n" ++ sepline ++ "\nThe goal is a comma-separated list of premises followed by the symbol '⊢' and the conclusion, i.e, it can be entered according to the format 'P1,...,Pn ⊢ C'. The symbol '⊢' can be entered by typing the keyword 'seq' or using the shortcut ':-'. The premises and the conclusion are formulas in either propositional logic or predicate logic. The icon on the right-hand side of the field (error symbol, warning symbol or check mark) indicates whether the input is syntactically correct; further information is provided by hovering over it."
+
+        frmtext =
+            "2) Entering Formulas:\n" ++ sepline ++ "\nPropositional Formulas can be entered according to BNF1: " ++ bnfProp ++ "\nFormulas in predicate logic can be entered according to either BNF2: " ++ bnfFOL1 ++ " or BNF3: " ++ bnfFOL2 ++ " where terms are entered according to " ++ bnfTerm ++ "; the required settings will be chosen automatically by entering the proof goal using a supported syntax. Manual configuration is possible by using the dropdown menu 'Syntax 'in the toolbar and toggling the required options accordingly. This menu also allows to configure the binding precedence of '∧' and '∨'. By default these operators are on the same precedence level. All operators are right associative and parentheses can be omitted according to operator precedence. Using BNF1 the default operator precedence is " ++ precPropDefault ++ "; for BNF2 it is " ++ precFOL1Default ++ "; and for BNF3 it is " ++ precFOL2Default ++ ". Operators can be entered using (common) keywords/shortcuts (listed in section 4 under 'replacements')."
+
+        linetext =
+            "3) Entering Proof Lines:\n" ++ sepline ++ "\nEvery proof line consists of two input fields: the formula that should be derived and a justification (rule) how to derive it. In order to switch between these fields the key 'TAB' or the shortcut ';' can be used; another option is to use the keyword 'by' in the formula field, i.e., using 'formula by' will remove the keyword 'by' and jump to the justification field. The following justifications are accepted: " ++ Proof.displayAllowedJustifications FOL ++ ". The icon on the right-hand side of the line (error symbol, warning symbol, check mark, black box) indicates whether the input is syntactically correct and the formula can be derived in the current context; further information is provided by hovering over it. The required line number references will be inferred automatically and are displayed on the right-hand side of the icon. Boxes are opened automatically when variables are fixed or when an assumption is introduced. Variables can be fixed by stating them between brackets, e.g., as '[x0]' to fix the variable 'x0'. A formula can be stated on the same line if desired, e.g., '[x0] P(x0)'. If the line only fixes variables then no justification is required. New lines can be spawned below the current line using the key 'ENTER'. In order to leave a box the key 'BACKSPACE' can be used in the last (empty) line of the box. Other empty lines will be deleted directly when 'BACKSPACE' is used in the formula field. A line also offers a dropdown menu ('...') that allows to move or delete lines and provides options to extend the range of a box ('extend box') or to close a box prematurely ('end box'). These work as follows: 'end box' ends the box after the current line; 'extend box' extends the previous box until the current line."
+
+        tooltext =
+            "4) Toolbar:\n" ++ sepline ++ "\n* Get Premises: inserts premises and conclusion from the (syntactically correct) goal into the proof lines; if the proof is non-empty the premises will be added before and the conclusion after the already filled-in lines; the goal is interpreted during this process and thus the inserted formulas may differ from the formulas in the goal field by adding explicit parentheses\n* Clear Proof: deletes all proof lines\n* Syntax: opens dropdown menu to toggle syntax settings; choose propositional or predicate logic; choose quantifier syntax; choose if '∧' should bind stronger than '∨'\n* Replacements: opens dropdown menu to toggle automatic replacements of keywords, shortcuts and greek letters; the following replacements are possible: " ++ Keywords.displayAllAcceptedReplacements ++ " where the first element is the symbol and the second element is a set of possible keywords/shortcuts to enter the symbol\n* Export: exports the stated proof either as a text file (that can also be imported and stores the current settings as well; this file is downloaded directly) or as a LaTeX proof (opens an overlay where the LaTeX code is displayed)\n* Import: imports a proof (that has been exported previously)\n* Help: displays this page"
+
+        errtext =
+            "5) Error Messages:\n" ++ sepline ++ "\nAll error messages have to be viewed by hovering over the corresponding warning/error icon. The tool consists of two core parts: the builder (parses lines and builds a proof of a type suitable for the proof checker) and the checker (checks proof for correctness). The builder can only fail due to syntactical mistakes, the corresponding parser error message will tell you what symbol it expects at which position in the string. If it expects some kind of string (propositional atom, predicate symbol, variable, function symbol) it will just tell you that it expects 'var'. There are many different errors that can occur while checking the proof, e.g., if some dependencies (premises required by the stated rule) cannot be found, a message of the form 'Facts were not found: f1,...,fn' will be displayed. A missing fact does not necessarily mean that no candidates (formulas of the correct shape) were available for this rule premise, it means that the constraints could not be satisfied (finding other premises that depend on this premise). These error messages may contain placeholders for formulas ('?ϕ'), variables ('?v') or terms (?t) that correspond with the internal/abstract representation of a rule."
+
+        bugtext =
+            "6) Known Bugs:\n" ++ sepline ++ "\n* Font Dependency: the text when hovering over elements (e.g., check mark icon) is set by the HTML title attribute and thus the style/font is fully controlled by the user's web browser; some unicode symbols may not be displayed correctly due to the chosen font\n* Reference Offset: line number references may be displayed incorrectly if the proof contains boxes that only fix variables and contain no other syntactically correct lines\n* Box Messages: error messages and warnings regarding boxes may not be displayed at the correct position, i.e., they are not necessarily displayed in the box they refer to"
+
+        helptext =
+            goaltext ++ "\n\n" ++ frmtext ++ "\n\n" ++ linetext ++ "\n\n" ++ tooltext ++ "\n\n" ++ errtext ++ "\n\n" ++ bugtext
+
 
         {- -- allows to display proof checking and build state, very useful for debugging
            viewprf =
@@ -1654,10 +2027,10 @@ view model =
         popup "#7d7b8a" "#e7e3ff" [] [] [ onClick MainPage ] [ text model.lasterror ]
 
     else if model.help then
-        popup "#7d7b8a" "#e7e3ff" [] [] [ onClick MainPage ] [ text "All elements provide useful information or tips when hovering over them.\nA new proof line below the current line can be spawned with 'Enter'.\nBoxes open automatically when a line is justified by an assumption or introduces variables.\nTo move between formula and justification field the key 'TAB' can be used.\nLines can be deleted with backspace when they are empty. If that line is within a block the block will be split, i.e., all lines before and after this line will be put into a separate block.\nHovering over the '...' button opens a dropdown menu that allows to delete or move the line or split the box at this point.\nThe toolbar provides buttons to insert premises and conclusion from the goal field into the proof lines, to merge consecutive boxes, to clear the proof, to change the syntax, to toggle replacements, to export the proof (txt or LaTeX), to import a txt proof, or to display this help page.\nError messages or further information can be viewed by hovering over the indicator symbol at the end of a line. A checkmark represents a valid proof step, a warning symbol indicates something that could be improved, an error symbol shows an error (either a parser error or checker error), a black box indicates a finished proof." ]
+        popup "#7d7b8a" "#e7e3ff" [] [] [ onClick MainPage ] [ text helptext ]
 
     else if model.latex then
-        popup "#7d7b8a" "#e7e3ff" [] [] [ onClick MainPage ] [ viewLaTeX <| proofToLaTeX model ]
+        popup "#7d7b8a" "#e7e3ff" [] [] [ onClick MainPage ] [ viewLaTeX <| proofToLaTeX buildstate mcheckstate model ]
 
     else
         globalDiv
@@ -1678,7 +2051,7 @@ view model =
                 )
             , spacerDiv [] []
             , styledTable1 "#e1f9fc"
-                [ title "Toolbox" ]
+                [ title "Toolbar" ]
                 (viewTools model.cfg)
             , spacerDiv [] []
 
@@ -1718,6 +2091,71 @@ displayFormatHint qtype =
 
     else
         "binds everything after '.'"
+
+bnfProp : String
+bnfProp =
+    "ϕ ⩴ p | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ)"
+
+bnfTerm : String
+bnfTerm =
+    "t ⩴ x | f(t,...,t)"
+
+bnfFOL1 : String
+bnfFOL1 =
+    "ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x ϕ) | (∃x ϕ)"
+
+bnfFOL2 : String
+bnfFOL2 =
+    "ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x. ϕ) | (∃x. ϕ)"
+
+displayBNF : Config -> String
+displayBNF cfg =
+    if cfg.fol then
+        if cfg.qtype then
+            bnfFOL1
+        else
+            bnfFOL2
+
+    else
+        bnfProp
+
+
+precPropDefault : String
+precPropDefault =
+    "{¬} > {∧,∨} > {⟶,⟷}"
+
+precFOL1Default : String
+precFOL1Default =
+    "{=} > {¬,∀,∃} > {∧,∨} > {⟶,⟷}"
+
+precFOL2Default : String
+precFOL2Default =
+    "{=} > {¬} > {∧,∨} > {⟶,⟷} > {∀,∃}"
+
+displayPrecedence : Config -> String
+displayPrecedence cfg =
+    if cfg.fol then
+        if cfg.qtype then
+            if cfg.conjstronger then
+                "{=} > {¬,∀,∃} > {∧} > {∨} > {⟶,⟷}"
+
+            else
+                precFOL1Default
+        else if cfg.conjstronger then
+            "{=} > {¬} > {∧} > {∨} > {⟶,⟷} > {∀,∃}"
+
+        else
+            precFOL2Default
+
+    else if cfg.conjstronger then
+        "{¬} > {∧} > {∨} > {⟶,⟷}"
+
+    else
+        precPropDefault
+
+displayAssociativity : String
+displayAssociativity =
+    "{∧,∨,⟶,⟷} are right associative"
 
 
 viewTools : Config -> List (Html Msg)
@@ -1777,39 +2215,28 @@ viewTools cfg =
                     displayLogic cfg.fol ++ " [selected]\n"
 
                 terms =
-                    "• t ⩴ x | f(t,...,t)\n"
+                    "• " ++ bnfTerm ++ "\n"
 
-                folformulas =
-                    if cfg.qtype then
-                        "• ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x ϕ) | (∃x ϕ)\n"
+                bnf =
+                    displayBNF cfg
 
-                    else
-                        "• ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x. ϕ) | (∃x. ϕ)\n"
+                formulas =
+                    "• " ++ bnf ++ "\n"
 
                 assoc =
-                    "• [∧,∨,⟶,⟷] are right associative\n"
+                    "• " ++ displayAssociativity ++ "\n"
 
                 omitouterparens =
                     "• omit outer parentheses\n"
 
-                folprecedence =
-                    if cfg.qtype then
-                        "• binding precedence: [=] > [¬,∀,∃] > [∧,∨] > [⟶,⟷]\n"
-
-                    else
-                        "• binding precedence: [=] > [¬] > [∧,∨] > [⟶,⟷] > [∀,∃]\n"
-
-                propformulas =
-                    "ϕ ⩴ p | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ)\n"
-
-                propprecedence =
-                    "• binding precedence: [¬] > [∧,∨] > [⟶,⟷]\n"
+                precedence =
+                    "• binding precedence: " ++ displayPrecedence cfg ++ "\n"
             in
             if cfg.fol then
-                t ++ terms ++ folformulas ++ folprecedence ++ omitouterparens ++ assoc
+                t ++ terms ++ formulas ++ precedence ++ omitouterparens ++ assoc
 
             else
-                t ++ propformulas ++ propprecedence ++ omitouterparens ++ assoc
+                t ++ formulas ++ precedence ++ omitouterparens ++ assoc
 
         bg =
             "#beb3ff"
@@ -1870,10 +2297,10 @@ viewTools cfg =
                     "List"
 
         hovercontent1 =
-            [ button1a [ onClick (ToolEvent ToggleLogic), title ("Switch to " ++ displayLogic (not cfg.fol) ++ "\n\n" ++ overview) ] [ text ("➤ Input: " ++ displayLogic cfg.fol) ]
-            , button1a [ onClick (ToolEvent ToggleQType), Html.Styled.Attributes.disabled (not cfg.fol), title qtitle ] [ text ("➤ Quantifier format: " ++ displayFormat cfg.qtype) ]
-            , button1a [ onClick (ToolEvent ToggleConjStronger), title ("Make conjunction bind " ++ displayConjStrength (not cfg.conjstronger)) ] [ text ("➤ " ++ displayConjPrec cfg.conjstronger) ]
+            [ button1a [ onClick (ToolEvent ToggleLogic), title ("Switch to " ++ displayLogic (not cfg.fol) ++ "\n\n" ++ overview) ] [ text ("➤ " ++ displayLogic cfg.fol) ]
             ]
+                |> addElementIf cfg.fol (button1a [ onClick (ToolEvent ToggleQType), title qtitle ] [ text ("➤ Quantifier format: " ++ displayFormat cfg.qtype) ])
+                |> addElement (button1a [ onClick (ToolEvent ToggleConjStronger), title ("Make conjunction bind " ++ displayConjStrength (not cfg.conjstronger)) ] [ text ("➤ " ++ displayConjPrec cfg.conjstronger) ])
 
         hovercontent2 =
             [ button1b [ onClick (ToolEvent ToggleReplaceKW), title (displayToggleKw ++ "\n" ++ Keywords.displayKeywordReplacementsFormatted 4) ] [ text displayStateKw ]
@@ -1892,11 +2319,12 @@ viewTools cfg =
             ]
 
         qtitle =
-            "Toggle format for quantifiers\n• " ++ displayFormat cfg.qtype ++ " [selected]\n   • Hint: " ++ displayFormatHint cfg.qtype ++ "\n• " ++ displayFormat (not cfg.qtype) ++ "\n   • Hint: " ++ displayFormatHint (not cfg.qtype)
+            "Toggle format for quantifiers\n• " ++ displayFormat cfg.qtype ++ " [selected]\n   • " ++ displayFormatHint cfg.qtype ++ "\n• " ++ displayFormat (not cfg.qtype) ++ "\n   • " ++ displayFormatHint (not cfg.qtype)
     in
     [ tr []
         [ td [] [ button2 [ onClick (ToolEvent GetPremises), title "Insert premises and conclusion into proof lines" ] [ text "Get Premises" ] ]
-        , td [] [ button2 [ onClick (ToolEvent MergeBlocks), title "Merge consecutive boxes" ] [ text "Merge Boxes" ] ]
+
+        --, td [] [ button2 [ onClick (ToolEvent MergeBlocks), title "Merge consecutive boxes" ] [ text "Merge Boxes" ] ]
         , td [] [ button2 [ onClick (ToolEvent ClearProof), title "Delete proof lines" ] [ text "Clear Proof" ] ]
         , td [] [ dropdown dropwidth1 "#b3c2ff" "#95a7ed" bg [ title "" ] [ text "Syntax" ] [] hovercontent1 ]
         , td [] [ dropdown dropwidth2 "#b3c2ff" "#95a7ed" bg [ title "" ] [ text "Replacements" ] [] hovercontent2 ]
@@ -1919,23 +2347,33 @@ viewGoal gsize cfg g =
             else
                 "a, b ⊢ a∧b"
 
+        ( inputok, checkmsg ) =
+            checkGoal cfg g
+
         hint =
             "use keyword 'seq' or shortcut ':-' to enter '⊢'"
+
+        titlemsg =
+            if inputok then
+                ""
+
+            else
+                "State the Goal. Enter premises and conclusion.\n• example: '" ++ example ++ "'\n• " ++ hint ++ "\n• " ++ displayBNF cfg ++ "\n• " ++ displayPrecedence cfg ++ "\n• " ++ displayAssociativity
     in
     tr []
-        [ td [] [ styledInput [ id "goal", size gsize, type_ "text", spellcheck False, autocomplete False, title ("Goal field. Enter premises and conclusion.\n• Example: '" ++ example ++ "'\n• Hint: " ++ hint), placeholder "Goal", value g, onInput Goal, onKeyEvent (KeyEvent 0 FieldGoal) ] [] ]
-        , td [] [ checkGoal cfg g ]
+        [ td [] [ styledInput [ id "goal", size gsize, type_ "text", spellcheck False, autocomplete False, title titlemsg, placeholder goalPlaceholder, value g, onInput Goal, onKeyEvent (KeyEvent 0 FieldGoal) ] [] ]
+        , td [] [ checkmsg ]
         ]
 
 
-checkGoal : Config -> GoalType -> Html Msg
+checkGoal : Config -> GoalType -> ( Bool, Html Msg )
 checkGoal cfg g =
     case Parser.run (Formula.sequent (getParserConfig cfg)) g of
         Ok x ->
-            styledCheck [ title ("Interpreted as:\n" ++ Formula.displaySeq cfg.qtype x) ] [ text "✓" ]
+            ( True, styledCheck [ title ("Interpreted as:\n" ++ Formula.displaySeq cfg.qtype x) ] [ text "✓" ] )
 
         Err x ->
-            styledCheck [ title ("Error parsing goal. Details:\n" ++ Utils.deadEndsToString x) ] [ text "⛔" ]
+            ( False, styledCheck [ title ("Error parsing goal. Details:\n" ++ Utils.deadEndsToString x) ] [ text "⛔" ] )
 
 
 
@@ -2040,14 +2478,11 @@ lineNumberSpacing len n =
 -- display a single proof line together with build & checking information
 
 
-viewLine : Int -> Int -> Config -> Int -> Maybe BuildLineState -> Maybe ProofCheck -> ( ( Int, Int ), ( String, String ), Bool ) -> Html Msg
+viewLine : Int -> Int -> Config -> Int -> Maybe BuildLineState -> Maybe ProofCheck -> ( ( Int, Int ), ( String, String ), ( Bool, Bool, Bool ) ) -> Html Msg
 viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
     let
-        ( ( n, _ ), c, inblock ) =
+        ( ( n, _ ), ( sf, sj ), ( inblock, lastinblock, blockbefore ) ) =
             l
-
-        ( sf, sj ) =
-            c
 
         dropwidth =
             100
@@ -2063,29 +2498,61 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                 |> addElementIf (n /= len) (button [ onClick (MoveEvent n MoveDown), title "" ] [ text "Move Down" ])
                 |> addElementIf (n > 1) (button [ onClick (MoveEvent n MoveUp), title "" ] [ text "Move Up" ])
                 |> addElementIf (len > 1) (button [ onClick (LineEvent n DeleteLine), title "" ] [ text "Delete Line" ])
-                |> addElementIf inblock (button [ onClick (BoxEvent n SplitBox), title "" ] [ text "Split Box" ])
+                |> addElementIf blockbefore (button [ onClick (BoxEvent n ExtendBox), title "" ] [ text "Extend Box" ])
+                |> addElementIf (inblock && not lastinblock) (button [ onClick (BoxEvent n EndBox), title "" ] [ text "End Box" ])
 
+        --|> addElementIf inblock (button [ onClick (BoxEvent n SplitBox), title "" ] [ text "Split Box" ])
         factexample =
             if cfg.fol then
                 "P∧Q"
 
             else
-                "a∧b"
+                "p∧q"
 
-        facthint =
-            "use key 'TAB', keyword 'by' or shortcut ';' to jump to justification field"
+        frmhint1 =
+            "use key 'TAB', keyword 'by' or shortcut ';' to jump to the justification field"
 
-        facttitle =
-            "Fact field. Enter a formula you want to derive. \n• Example: '" ++ factexample ++ "'\n• Hint : " ++ facthint
+        frmtitle =
+            "Enter a formula you want to derive. \n• example: '" ++ factexample ++ "'\n• " ++ frmhint1 ++ "\n• " ++ displayBNF cfg ++ "\n• " ++ displayPrecedence cfg ++ "\n• " ++ displayAssociativity
 
         jfcexample =
             "∧i"
 
         jfchint =
-            "use key 'TAB' or shortcut ';' to quickly jump to the fact field"
+            "use key 'TAB' or shortcut ';' to quickly jump to the formula field"
 
         jfctitle =
-            "Justification field. How is the fact derived?\n• Example: '" ++ jfcexample ++ "'\n• Hint: " ++ jfchint
+            "Justify the formula. How can it be derived?\n• example: '" ++ jfcexample ++ "'\n• " ++ jfchint ++ "\n• accepted justifications: " ++ Proof.displayAllowedJustifications cfg.subset
+
+        filteredDeps =
+            \deps ->
+                deps
+                    |> List.filter
+                        (\d ->
+                            case d of
+                                None ->
+                                    False
+
+                                _ ->
+                                    True
+                        )
+
+        depsUsed =
+            \deps ->
+                deps
+                    |> filteredDeps
+                    |> List.isEmpty
+                    |> not
+
+        displayDepsRaw =
+            \deps ->
+                deps
+                    |> filteredDeps
+                    |> ProofChecking.displayFactPositions
+
+        displayDepsInline =
+            \deps ->
+                "using " ++ displayDepsRaw deps
 
         displayDeps =
             \deps ->
@@ -2119,6 +2586,18 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                                     "Referenced Lines: " ++ ProofChecking.displayFactPositions ds
                        )
 
+        displayGeneralized =
+            \gen ->
+                let
+                    g =
+                        Formula.displayFormulas cfg.qtype gen
+                in
+                if String.isEmpty g then
+                    ""
+
+                else
+                    "Intermediate form: " ++ g
+
         displayVersion =
             \ver ->
                 let
@@ -2132,22 +2611,28 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                     "Rule Version: " ++ v
 
         displaySuccess =
-            \deps ver ->
+            \deps gen ver ->
                 let
                     d =
                         displayDeps deps
 
                     v =
                         displayVersion ver
+
+                    g =
+                        displayGeneralized gen
                 in
                 if String.isEmpty d && String.isEmpty v then
                     ""
 
-                else
+                else if String.isEmpty g then
                     "Checker:\n" ++ d ++ "\n" ++ v
 
+                else
+                    "Checker:\n" ++ d ++ "\n" ++ g ++ "\n" ++ v
+
         displayQED =
-            \deps ver ->
+            \deps gen ver ->
                 let
                     d =
                         displayDeps deps
@@ -2155,10 +2640,17 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                     v =
                         displayVersion ver
 
+                    g =
+                        displayGeneralized gen
+
                     base =
                         "Checker:\nLine successfully derives proof goal."
                 in
-                base ++ "\n" ++ d ++ "\n" ++ v
+                if String.isEmpty g then
+                    base ++ "\n" ++ d ++ "\n" ++ v
+
+                else
+                    base ++ "\n" ++ d ++ "\n" ++ g ++ "\n" ++ v
 
         chkmsg =
             \varfix lineinterpretation mbuildwarning ->
@@ -2176,28 +2668,28 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                 in
                 -- able to parse line, check state of line (returned from checker)
                 if varfix then
-                    styledCheck [ title basemsg ] [ text "✓" ]
+                    ( styledCheck [ title basemsg ] [ text "✓" ], [] )
 
                 else
                     case mcheckstate of
                         Just chk ->
                             case chk of
-                                LineSuccess deps ver ->
-                                    styledCheck [ title (basemsg ++ "\n\n" ++ displaySuccess deps ver) ] [ text "✓" ]
+                                LineSuccess deps genfs ver ->
+                                    ( styledCheck [ title (basemsg ++ "\n\n" ++ displaySuccess deps genfs ver) ] [ text "✓" ], deps )
 
-                                LineQED deps ver ->
-                                    styledCheck [ title (basemsg ++ "\n\n" ++ displayQED deps ver) ] [ text "∎" ]
+                                LineQED deps genfs ver ->
+                                    ( styledCheck [ title (basemsg ++ "\n\n" ++ displayQED deps genfs ver) ] [ text "∎" ], deps )
 
                                 LineError msg ->
-                                    styledCheck [ title (basemsg ++ "\n\nChecker:\n" ++ msg) ] [ text "⛔" ]
+                                    ( styledCheck [ title (basemsg ++ "\n\nChecker:\n" ++ msg) ] [ text "⛔" ], [] )
 
                                 LineWarning msg ->
-                                    styledCheck [ title (basemsg ++ "\n\nChecker:\n" ++ msg) ] [ text "⚠" ]
+                                    ( styledCheck [ title (basemsg ++ "\n\nChecker:\n" ++ msg) ] [ text "⚠" ], [] )
 
                         Nothing ->
-                            styledCheck [ title (basemsg ++ "\n\nChecker:\nFix other errors first!") ] [ text "⚠" ]
+                            ( styledCheck [ title (basemsg ++ "\n\nChecker:\nFix other errors first!") ] [ text "⚠" ], [] )
 
-        ( vfix, check ) =
+        ( vfix, ( check, dependencies ) ) =
             case mbuildstate of
                 Nothing ->
                     ( False, chkmsg False "?" Nothing )
@@ -2206,7 +2698,7 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                     case buildstate of
                         BuildError msg ->
                             -- build error / parsing the line failed, no need to look into deeper errors/warnings
-                            ( False, styledCheck [ title ("Builder:\n" ++ msg) ] [ text "⛔" ] )
+                            ( False, ( styledCheck [ title ("Builder:\n" ++ msg) ] [ text "⛔" ], [] ) )
 
                         BuildWarning msg interpretation ->
                             ( False, chkmsg False interpretation (Just msg) )
@@ -2216,7 +2708,7 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
     in
     Html.Styled.table []
         [ tr [ css [ whiteSpace noWrap ] ]
-            (styledTd (lineNumberSpacing len n) [ title "Line Number" ] [ text (String.fromInt n ++ ". ") ]
+            (styledTd (lineNumberSpacing len n) [ title ("Line #" ++ String.fromInt n) ] [ text (String.fromInt n ++ ". ") ]
                 :: [ td []
                         [ styledInput
                             [ id (frmId n)
@@ -2224,8 +2716,14 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                             , type_ "text"
                             , spellcheck False
                             , autocomplete False
-                            , title facttitle
-                            , placeholder (linePlaceholder n)
+                            , title
+                                (if String.isEmpty sf then
+                                    frmtitle
+
+                                 else
+                                    ""
+                                )
+                            , placeholder frmPlaceholder
                             , value sf
                             , onInput
                                 (\s ->
@@ -2244,13 +2742,19 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                             , type_ "text"
                             , spellcheck False
                             , autocomplete False
-                            , title jfctitle
+                            , title
+                                (if String.isEmpty sj then
+                                    jfctitle
+
+                                 else
+                                    ""
+                                )
                             , placeholder
                                 (if vfix then
                                     "fix"
 
                                  else
-                                    jfcPlaceholder n
+                                    jfcPlaceholder
                                 )
                             , value sj
                             , onInput
@@ -2264,21 +2768,161 @@ viewLine lsize jfcsize cfg len mbuildstate mcheckstate l =
                             ]
                             []
                         ]
-                   , td [ css [ whiteSpace normal ] ] ([] |> addElementIf (hovercontent /= []) (dropdown1 dropwidth "#b3c2ff" "#95a7ed" bg [ title "" ] [ text "..." ] [] hovercontent))
+                   , td [ css [ whiteSpace normal ] ] ([] |> addElementIf (hovercontent /= []) (dropdown1 dropwidth "#b3c2ff" "#95a7ed" bg [ id (lineMenuId n), title "" ] [ text "..." ] [] hovercontent))
                    , td [] [ check ]
                    ]
+                |> addElementIf (dependencies |> depsUsed) (td [ css [ fontSize (px 11) ] ] [ text (displayDepsInline dependencies) ])
             )
         ]
+
+
+
+-- in case that the line only fixes vars OR could not be converted into a step, we do not get proofchecking information since this line is not represented in the proof type
+-- hence, we also have to correct line number references
+
+
+updateDeps : Int -> List ProofCheck -> List FactPos -> List FactPos
+updateDeps i chk deps =
+    let
+        current =
+            i + 1
+    in
+    deps
+        |> List.map
+            (\d ->
+                case d of
+                    None ->
+                        None
+
+                    LineNo k ->
+                        if k >= current then
+                            LineNo (k + 1)
+
+                        else
+                            d
+
+                    Range j k ->
+                        let
+                            newj =
+                                if j == current && isOutermostReferencedBlock j k chk then
+                                    j
+
+                                else if j >= current then
+                                    j + 1
+
+                                else
+                                    j
+
+                            newk =
+                                if k >= current then
+                                    k + 1
+
+                                else
+                                    k
+                        in
+                        Range newj newk
+            )
+
+
+
+-- check whether block starting at this line is outermost referenced block (that starts at this line)
+
+
+isOutermostReferencedBlock : Int -> Int -> List ProofCheck -> Bool
+isOutermostReferencedBlock begin end =
+    List.any
+        (\checkline ->
+            case checkline of
+                LineSuccess deps genfs msg ->
+                    deps
+                        |> List.any
+                            (\d ->
+                                case d of
+                                    Range b1 e1 ->
+                                        b1
+                                            == begin
+                                            && e1
+                                            > end
+                                            |> not
+
+                                    _ ->
+                                        False
+                            )
+
+                LineQED deps genfs msg ->
+                    deps
+                        |> List.any
+                            (\d ->
+                                case d of
+                                    Range b1 e1 ->
+                                        b1
+                                            == begin
+                                            && e1
+                                            > end
+                                            |> not
+
+                                    _ ->
+                                        False
+                            )
+
+                _ ->
+                    False
+        )
+
+
+
+-- corrects all dependencies in given list proofcheck (offset)
+
+
+correctDepsInChecked : Int -> List ProofCheck -> List ProofCheck
+correctDepsInChecked i =
+    List.foldl
+        (\checkline updated ->
+            case checkline of
+                LineSuccess deps genfs msg ->
+                    deps
+                        |> updateDeps i updated
+                        |> (\ds -> LineSuccess ds genfs msg)
+                        |> (\cl -> updated ++ [ cl ])
+
+                LineQED deps genfs msg ->
+                    deps
+                        |> updateDeps i updated
+                        |> (\ds -> LineQED ds genfs msg)
+                        |> (\cl -> updated ++ [ cl ])
+
+                checkerr ->
+                    updated ++ [ checkerr ]
+        )
+        []
+
+
+getCheckInfo : Int -> Bool -> List ProofCheck -> ( Maybe ProofCheck, List ProofCheck )
+getCheckInfo i skipcheck pcheck =
+    case pcheck of
+        [] ->
+            ( Nothing, [] )
+
+        c :: cs ->
+            if skipcheck then
+                pcheck
+                    |> correctDepsInChecked i
+                    |> (\pc ->
+                            ( Nothing, pc )
+                       )
+
+            else
+                ( Just c, cs )
 
 
 
 -- helper to display proof lines together with build & checking information; what makes this a bit complex is that the checked proof diverges from the typed proof since lines that could not be parsed or just fix a variable are not included; hence, the references returned by the checker have to be corrected
 
 
-viewLinesHelper : Int -> Int -> Bool -> RawProof -> ( ( Int, Int ), ( Config, Int, BuildState ), ( List ProofCheck, List ( BlockCheck, FactPos ), List (Html Msg) ) ) -> ( ( Int, Int ), ( Config, Int, BuildState ), ( List ProofCheck, List ( BlockCheck, FactPos ), List (Html Msg) ) )
+viewLinesHelper : Int -> Int -> Bool -> RawProof -> ( ( Int, Int, ( List Bool, Bool ) ), ( Config, Int, BuildState ), ( List ProofCheck, List ( BlockCheck, FactPos ), List (Html Msg) ) ) -> ( ( Int, Int, ( List Bool, Bool ) ), ( Config, Int, BuildState ), ( List ProofCheck, List ( BlockCheck, FactPos ), List (Html Msg) ) )
 viewLinesHelper lsize jfcsize inblock prf state =
     let
-        ( ( i, offset ), ( cfg, len, buildstate ), ( pcheck, bcheck, msgs ) ) =
+        ( ( i, offset, ( ends, blockbefore ) ), ( cfg, len, buildstate ), ( pcheck, bcheck, msgs ) ) =
             state
     in
     case prf of
@@ -2329,10 +2973,18 @@ viewLinesHelper lsize jfcsize inblock prf state =
                             in
                             case b of
                                 BlockError msg ->
-                                    bmsg msg
+                                    if ProofChecking.proofQED pcheck then
+                                        bmsg msg
+
+                                    else
+                                        []
 
                                 BlockWarning msg ->
-                                    bmsg msg
+                                    if ProofChecking.proofQED pcheck then
+                                        bmsg msg
+
+                                    else
+                                        []
 
                                 _ ->
                                     []
@@ -2340,93 +2992,33 @@ viewLinesHelper lsize jfcsize inblock prf state =
                         _ ->
                             []
 
-                -- in case that the line only fixes vars OR could not be converted into a step, we do not get proofchecking information since this line is not represented in the proof type
-                -- hence, we also have to correct line number references
-                -- currently does not include the skipped line in 'Range j k'
-                updateDeps =
-                    \deps ->
-                        deps
-                            |> List.map
-                                (\d ->
-                                    case d of
-                                        None ->
-                                            None
-
-                                        LineNo k ->
-                                            if k >= i + 1 then
-                                                k
-                                                    + 1
-                                                    |> LineNo
-
-                                            else
-                                                d
-
-                                        Range j k ->
-                                            let
-                                                newj =
-                                                    if j >= i + 1 then
-                                                        j + 1
-
-                                                    else
-                                                        j
-
-                                                newk =
-                                                    if k >= i + 1 then
-                                                        k + 1
-
-                                                    else
-                                                        k
-                                            in
-                                            Range newj newk
-                                )
-
                 ( mcheck, checkrest ) =
-                    case pcheck of
+                    getCheckInfo i skipcheck pcheck
+
+                ( lastinblock, endsrest ) =
+                    case ends of
                         [] ->
-                            ( Nothing, [] )
+                            ( False, [] )
 
-                        c :: cs ->
-                            if skipcheck then
-                                pcheck
-                                    |> List.map
-                                        (\p ->
-                                            case p of
-                                                LineSuccess deps msg ->
-                                                    deps
-                                                        |> updateDeps
-                                                        |> (\ds -> LineSuccess ds msg)
-
-                                                LineQED deps msg ->
-                                                    deps
-                                                        |> updateDeps
-                                                        |> (\ds -> LineQED ds msg)
-
-                                                _ ->
-                                                    p
-                                        )
-                                    |> (\pc ->
-                                            ( Nothing, pc )
-                                       )
-
-                            else
-                                ( Just c, cs )
+                        l :: rest ->
+                            ( l, rest )
             in
-            ( ( i + 1, newoffset ), ( cfg, len, buildrest ), ( checkrest, remainingblocks, msgs ++ blockmsg ++ [ viewLine lsize jfcsize cfg len mbuildstate mcheck ( ( i + 1, newoffset ), ( frm, jfc ), inblock ) ] ) )
+            ( ( i + 1, newoffset, ( endsrest, blockbefore ) ), ( cfg, len, buildrest ), ( checkrest, remainingblocks, msgs ++ blockmsg ++ [ viewLine lsize jfcsize cfg len mbuildstate mcheck ( ( i + 1, newoffset ), ( frm, jfc ), ( inblock, lastinblock, blockbefore ) ) ] ) )
 
         RawBlock ps ->
             -- pack block into a new table
             let
                 blockstate =
-                    ( ( i, offset ), ( cfg, len, buildstate ), ( pcheck, bcheck, [] ) )
+                    ( ( i, offset, ( ends, False ) ), ( cfg, len, buildstate ), ( pcheck, bcheck, [] ) )
 
-                ( ( j, boffset ), ( _, _, buildrest ), ( cs, bs, bmsgs ) ) =
+                ( ( j, boffset, ( bends, _ ) ), ( _, _, buildrest ), ( cs, bs, bmsgs ) ) =
                     List.foldl (viewLinesHelper lsize jfcsize True) blockstate ps
 
                 tableblock =
                     [ styledTable3 "#e3eeff" [ title "" ] bmsgs
                     ]
             in
-            ( ( j, boffset ), ( cfg, len, buildrest ), ( cs, bs, msgs ++ tableblock ) )
+            ( ( j, boffset, ( bends, True ) ), ( cfg, len, buildrest ), ( cs, bs, msgs ++ tableblock ) )
 
         RawBegin ps ->
             List.foldl (viewLinesHelper lsize jfcsize False) state ps
@@ -2441,6 +3033,10 @@ viewLines lsize jfcsize cfg prf buildstate mcheckstate =
     let
         len =
             proofLength prf
+
+        ends =
+            List.range 1 len
+                |> List.map (endsBlock prf)
     in
     case mcheckstate of
         Just st ->
@@ -2448,9 +3044,9 @@ viewLines lsize jfcsize cfg prf buildstate mcheckstate =
                 ( linestate, blockstate ) =
                     ProofChecking.stateToResult st
             in
-            viewLinesHelper lsize jfcsize False prf ( ( 0, 0 ), ( cfg, len, buildstate ), ( linestate, blockstate, [] ) )
+            viewLinesHelper lsize jfcsize False prf ( ( 0, 0, ( ends, False ) ), ( cfg, len, buildstate ), ( linestate, blockstate, [] ) )
                 |> (\( _, _, ( _, _, msgs ) ) -> msgs)
 
         Nothing ->
-            viewLinesHelper lsize jfcsize False prf ( ( 0, 0 ), ( cfg, len, buildstate ), ( [], [], [] ) )
+            viewLinesHelper lsize jfcsize False prf ( ( 0, 0, ( ends, False ) ), ( cfg, len, buildstate ), ( [], [], [] ) )
                 |> (\( _, _, ( _, _, msgs ) ) -> msgs)

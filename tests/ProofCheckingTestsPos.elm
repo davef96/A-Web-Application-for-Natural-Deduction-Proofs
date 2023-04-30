@@ -616,6 +616,51 @@ suite =
                             folCheck goal proof
                     in
                     Expect.equal result True
+            , test "Universal Elimination (4.1.1)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y P(x,y,x) ⊢ ∃y P(k,y,k)"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y P(x,y,x))", "premise" ) )
+                            , ( 0, ( "∃y P(k,y,k)", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (4.1.2)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y P(x,y,x) ⊢ ∃y P(x,y,x)"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y P(x,y,x))", "premise" ) )
+                            , ( 0, ( "∃y P(x,y,x)", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (4.1.3)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y P(f(x,y),y,g(h(x,x,y))) ⊢ ∃y P(f(f(k),y),y,g(h(f(k),f(k),y)))"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y P(f(x,y),y,g(h(x,x,y))))", "premise" ) )
+                            , ( 0, ( "∃y P(f(f(k),y),y,g(h(f(k),f(k),y)))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
             , test "Universal Elimination (4.2)" <|
                 \_ ->
                     let
@@ -641,6 +686,96 @@ suite =
                             [ ( 0, ( "∀x(∀y(∀z(P(x,y,z))))", "premise" ) )
                             , ( 0, ( "∀y(∀z(P(a,y,z)))", "∀e" ) )
                             , ( 0, ( "∀z(P(a,a,z))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (5)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x P(x) ⊢ P(f(g(h(x,x,f(x)))))"
+
+                        proof =
+                            [ ( 0, ( "∀x P(x)", "premise" ) )
+                            , ( 0, ( "P(f(g(h(x,x,f(x)))))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (6)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y P(x,y) ⊢ ∃y P(f(g(h(x,x,f(u)))),y)"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y P(x,y))", "premise" ) )
+                            , ( 0, ( "∃y P(f(g(h(x,x,f(u)))),y)", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (7)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y ∀z (P(x,f(b)) ⟶ Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b))) ⊢ ∃y ∀z (P(f(a,b,c),f(b)) ⟶ Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b)))"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b))))))", "premise" ) )
+                            , ( 0, ( "∃y (∀z (P(f(a,b,c),f(b)) ⟶ (Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b)))))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (8)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y ∀z (P(x,f(b)) ⟶ Q(h(f(b),a,b,f(b)),y) ⟶ R(y,x)) ⊢ ∃y ∀z (P(f(a,b,c),f(b)) ⟶ Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(a,b,c)))"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(h(f(b),a,b,f(b)),y) ⟶ R(y,x)))))", "premise" ) )
+                            , ( 0, ( "∃y (∀z (P(f(a,b,c),f(b)) ⟶ (Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(a,b,c)))))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (9)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x (Q(x) ∧ (∃y ∃x P(x,y,z))) ⊢ (Q(f(x,y,z)) ∧ (∃y ∃x P(x,y,z)))"
+
+                        proof =
+                            [ ( 0, ( "∀x (Q(x) ∧ (∃y (∃x P(x,y,z))))", "premise" ) )
+                            , ( 0, ( "Q(f(x,y,z)) ∧ (∃y (∃x P(x,y,z)))", "∀e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Elimination (10)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x (Q(x,y) ∧ (∃y ∃x P(x,y,z))) ⊢ (Q(f(x,y,z),y) ∧ (∃y ∃x P(x,y,z)))"
+
+                        proof =
+                            [ ( 0, ( "∀x (Q(x,y) ∧ (∃y (∃x P(x,y,z))))", "premise" ) )
+                            , ( 0, ( "Q(f(x,y,z),y) ∧ (∃y (∃x P(x,y,z)))", "∀e" ) )
                             ]
 
                         result =
@@ -827,7 +962,81 @@ suite =
                             folCheck goal proof
                     in
                     Expect.equal result True
-            , test "Equality Introduction" <|
+            , test "Existential Introduction (4)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∃x P(x,a,x,y) ⊢ ∃y ∃x P(x,a,x,y)"
+
+                        proof =
+                            [ ( 0, ( "∃x P(x,a,x,y)", "premise" ) )
+                            , ( 0, ( "∃y (∃x P(x,a,x,y))", "∃i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Existential Introduction (4.1)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∃x P(x,a,x,f(x,y)) ⊢ ∃y ∃x P(x,a,x,f(x,y))"
+
+                        proof =
+                            [ ( 0, ( "∃x P(x,a,x,f(x,y))", "premise" ) )
+                            , ( 0, ( "∃y (∃x P(x,a,x,f(x,y)))", "∃i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Existential Introduction (4.2)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∃x ∀y P(x,g(z),x,f(x,y)) ⊢ ∃z ∃x ∀y P(x,z,x,f(x,y))"
+
+                        proof =
+                            [ ( 0, ( "∃x (∀y P(x,g(z),x,f(x,y)))", "premise" ) )
+                            , ( 0, ( "∃z (∃x (∀y P(x,z,x,f(x,y))))", "∃i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Existential Introduction (4.3)" <|
+                \_ ->
+                    let
+                        goal =
+                            "∃x ∀y P(x,a,x,f(x,y)) ⊢ ∃z ∃x ∀y P(x,z,x,f(x,y))"
+
+                        proof =
+                            [ ( 0, ( "∃x (∀y P(x,a,x,f(x,y)))", "premise" ) )
+                            , ( 0, ( "∃z (∃x (∀y P(x,z,x,f(x,y))))", "∃i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Introduction (1)" <|
+                \_ ->
+                    let
+                        goal =
+                            "⊢ f(x,x) ＝ f(x,x)"
+
+                        proof =
+                            [ ( 0, ( "f(x,x) ＝ f(x,x)", "＝i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Introduction (2)" <|
                 \_ ->
                     let
                         goal =
@@ -835,6 +1044,20 @@ suite =
 
                         proof =
                             [ ( 0, ( "t ＝ t", "＝i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Introduction (3)" <|
+                \_ ->
+                    let
+                        goal =
+                            "⊢ f(x,g(x),y) ＝ f(x,g(x),y)"
+
+                        proof =
+                            [ ( 0, ( "f(x,g(x),y) ＝ f(x,g(x),y)", "＝i" ) )
                             ]
 
                         result =
@@ -861,12 +1084,12 @@ suite =
                 \_ ->
                     let
                         goal =
-                            "s ＝ t, t ＝ u ⊢ s ＝ u"
+                            "s ＝ t, s ＝ u ⊢ t ＝ u"
 
                         proof =
                             [ ( 0, ( "s ＝ t", "premise" ) )
-                            , ( 0, ( "t ＝ u", "premise" ) )
-                            , ( 0, ( "s ＝ u", "＝e" ) )
+                            , ( 0, ( "s ＝ u", "premise" ) )
+                            , ( 0, ( "t ＝ u", "＝e" ) )
                             ]
 
                         result =
@@ -877,10 +1100,10 @@ suite =
                 \_ ->
                     let
                         goal =
-                            "f(g(x),h(y)) ＝ a(q), P(a(q), f(x), a(q)) ⊢ P(a(q), f(x), f(g(x),h(y)) )"
+                            "a(q) ＝ f(g(x),h(y)), P(a(q), f(x), a(q)) ⊢ P(a(q), f(x), f(g(x),h(y)) )"
 
                         proof =
-                            [ ( 0, ( "f(g(x),h(y)) ＝ a(q)", "premise" ) )
+                            [ ( 0, ( "a(q) ＝ f(g(x),h(y))", "premise" ) )
                             , ( 0, ( "P(a(q),f(x),a(q))", "premise" ) )
                             , ( 0, ( "P(a(q),f(x),f(g(x),h(y)))", "＝e" ) )
                             ]
@@ -905,6 +1128,278 @@ suite =
                             folCheck goal proof
                     in
                     Expect.equal result True
+            , test "Equality Elimination (5)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(x) ＝ f(y), P(z,y,f(x)) ⊢ P(z,y,f(y))"
+
+                        proof =
+                            [ ( 0, ( "f(x) ＝ f(y)", "premise" ) )
+                            , ( 0, ( "P(z,y,f(x))", "premise" ) )
+                            , ( 0, ( "P(z,y,f(y))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (6)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(x) ＝ g(y), P(z,y,f(x),x) ⊢ P(z,y,g(y),x)"
+
+                        proof =
+                            [ ( 0, ( "f(x) ＝ g(y)", "premise" ) )
+                            , ( 0, ( "P(z,y,f(x),x)", "premise" ) )
+                            , ( 0, ( "P(z,y,g(y),x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (7)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(x,g(x)) ＝ y, P(z,y,f(x,g(x)),x) ⊢ P(z,y,y,x)"
+
+                        proof =
+                            [ ( 0, ( "f(x,g(x)) ＝ y", "premise" ) )
+                            , ( 0, ( "P(z,y,f(x,g(x)),x)", "premise" ) )
+                            , ( 0, ( "P(z,y,y,x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (8)" <|
+                \_ ->
+                    let
+                        goal =
+                            "y ＝ f(x,g(x)), P(z,y,y,x) ⊢ P(z,y,f(x,g(x)),x) "
+
+                        proof =
+                            [ ( 0, ( "y ＝ f(x,g(x))", "premise" ) )
+                            , ( 0, ( "P(z,y,y,x)", "premise" ) )
+                            , ( 0, ( "P(z,y,f(x,g(x)),x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (9)" <|
+                \_ ->
+                    let
+                        goal =
+                            "h(y,f(x,y)) ＝ f(x,g(x)), P(z,y,h(y,f(x,y)),x) ⊢ P(z,y,f(x,g(x)),x) "
+
+                        proof =
+                            [ ( 0, ( "h(y,f(x,y)) ＝ f(x,g(x))", "premise" ) )
+                            , ( 0, ( "P(z,y,h(y,f(x,y)),x)", "premise" ) )
+                            , ( 0, ( "P(z,y,f(x,g(x)),x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (10)" <|
+                \_ ->
+                    let
+                        goal =
+                            "z ＝ f(x,z), P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x) ⊢ P(f(x,z),y,x,f(x,f(x,z)),f(y,x),f(z,f(x,z)),z,y,x)"
+
+                        proof =
+                            [ ( 0, ( "z ＝ f(x,z)", "premise" ) )
+                            , ( 0, ( "P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x)", "premise" ) )
+                            , ( 0, ( "P(f(x,z),y,x,f(x,f(x,z)),f(y,x),f(z,f(x,z)),z,y,x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (10.1)" <|
+                \_ ->
+                    let
+                        goal =
+                            "z ＝ f(x,z), P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x) ⊢ P(z,y,x,f(x,z),f(y,x),f(f(x,z),f(x,z)),z,y,x)"
+
+                        proof =
+                            [ ( 0, ( "z ＝ f(x,z)", "premise" ) )
+                            , ( 0, ( "P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x)", "premise" ) )
+                            , ( 0, ( "P(z,y,x,f(x,z),f(y,x),f(f(x,z),f(x,z)),z,y,x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (10.2)" <|
+                \_ ->
+                    let
+                        goal =
+                            "z ＝ f(x,z), P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x) ⊢ P(f(x,z),y,x,f(x,z),f(y,x),f(z,z),f(x,z),y,x)"
+
+                        proof =
+                            [ ( 0, ( "z ＝ f(x,z)", "premise" ) )
+                            , ( 0, ( "P(z,y,x,f(x,z),f(y,x),f(z,z),z,y,x)", "premise" ) )
+                            , ( 0, ( "P(f(x,z),y,x,f(x,z),f(y,x),f(z,z),f(x,z),y,x)", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (11)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(a,a) ＝ h(a,b), ∀x ∃y ∀z P(x,y,z,f(a,a)) ⊢ ∀x ∃y ∀z P(x,y,z,h(a,b))"
+
+                        proof =
+                            [ ( 0, ( "f(a,a) ＝ h(a,b)", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,a))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,h(a,b))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (12)" <|
+                \_ ->
+                    let
+                        goal =
+                            "a ＝ h(a,b,f(a,b)), ∀x ∃y ∀z P(x,y,z,f(a,a)) ⊢ ∀x ∃y ∀z P(x,y,z,f(a,h(a,b,f(a,b))))"
+
+                        proof =
+                            [ ( 0, ( "a ＝ h(a,b,f(a,b))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,a))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,h(a,b,f(a,b))))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (13)" <|
+                \_ ->
+                    let
+                        goal =
+                            "a ＝ h(a,b,f(a,b)), ∀x ∃y ∀z P(x,y,z,f(a,a)) ⊢ ∀x ∃y ∀z P(x,y,z,f(h(a,b,f(a,b)),h(a,b,f(a,b))))"
+
+                        proof =
+                            [ ( 0, ( "a ＝ h(a,b,f(a,b))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,a))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(h(a,b,f(a,b)),h(a,b,f(a,b))))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (14)" <|
+                \_ ->
+                    let
+                        goal =
+                            "h(a,b,f(a,b)) ＝ a, ∀x ∃y ∀z P(x,y,z,f(a,h(a,b,f(a,b)))) ⊢ ∀x ∃y ∀z P(x,y,z,f(a,a))"
+
+                        proof =
+                            [ ( 0, ( "h(a,b,f(a,b)) ＝ a", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,h(a,b,f(a,b))))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,a))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (15)" <|
+                \_ ->
+                    let
+                        goal =
+                            "h(a,b,f(a,b)) ＝ a, ∀x ∃y ∀z P(x,y,z,f(h(a,b,f(a,b)),h(a,b,f(a,b)))) ⊢ ∀x ∃y ∀z P(x,y,z,f(a,a))"
+
+                        proof =
+                            [ ( 0, ( "h(a,b,f(a,b)) ＝ a", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(h(a,b,f(a,b)),h(a,b,f(a,b))))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z P(x,y,z,f(a,a))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (16)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(b) ＝ a, ∀x ∃y ∀z (P(x,x) ⟶ Q(f(b),y) ⟶ R(y,x)) ⊢ ∀x ∃y ∀z (P(x,x) ⟶ Q(a,y) ⟶ R(y,x))"
+
+                        proof =
+                            [ ( 0, ( "f(b) ＝ a", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,x) ⟶ (Q(f(b),y) ⟶ R(y,x)))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,x) ⟶ (Q(a,y) ⟶ R(y,x)))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (17)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(b) ＝ g(a), ∀x ∃y ∀z (P(x,x) ⟶ Q(f(b),y) ⟶ R(y,x)) ⊢ ∀x ∃y ∀z (P(x,x) ⟶ Q(g(a),y) ⟶ R(y,x))"
+
+                        proof =
+                            [ ( 0, ( "f(b) ＝ g(a)", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,x) ⟶ (Q(f(b),y) ⟶ R(y,x)))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,x) ⟶ (Q(g(a),y) ⟶ R(y,x)))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (18)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(b) ＝ g(a), ∀x ∃y ∀z (P(x,f(b)) ⟶ Q(f(b),y) ⟶ R(y,f(b))) ⊢ ∀x ∃y ∀z (P(x,f(b)) ⟶ Q(g(a),y) ⟶ R(y,g(a)))"
+
+                        proof =
+                            [ ( 0, ( "f(b) ＝ g(a)", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(f(b),y) ⟶ R(y,f(b))))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(g(a),y) ⟶ R(y,g(a))))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Equality Elimination (19)" <|
+                \_ ->
+                    let
+                        goal =
+                            "f(b) ＝ g(a), ∀x ∃y ∀z (P(x,f(b)) ⟶ Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b))) ⊢ ∀x ∃y ∀z (P(x,f(b)) ⟶ Q(h(f(b),a,b,g(a)),y) ⟶ R(y,g(a)))"
+
+                        proof =
+                            [ ( 0, ( "f(b) ＝ g(a)", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(h(f(b),a,b,f(b)),y) ⟶ R(y,f(b))))))", "premise" ) )
+                            , ( 0, ( "∀x (∃y (∀z (P(x,f(b)) ⟶ (Q(h(f(b),a,b,g(a)),y) ⟶ R(y,g(a))))))", "＝e" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
             , test "Universal Introduction (0)" <|
                 \_ ->
                     let
@@ -920,7 +1415,7 @@ suite =
                             folCheck goal proof
                     in
                     Expect.equal result True
-            , test "Universal Introduction (0.5)" <|
+            , test "Universal Introduction (0.1)" <|
                 \_ ->
                     let
                         goal =
@@ -935,7 +1430,7 @@ suite =
                             folCheck goal proof
                     in
                     Expect.equal result True
-            , test "Universal Introduction (0.1)" <|
+            , test "Universal Introduction (0.2)" <|
                 \_ ->
                     let
                         goal =
@@ -944,6 +1439,23 @@ suite =
                         proof =
                             [ ( 1, ( "[x0] P(a)", "premise" ) )
                             , ( 0, ( "∀x P(a)", "∀i" ) )
+                            ]
+
+                        result =
+                            folCheck goal proof
+                    in
+                    Expect.equal result True
+            , test "Universal Introduction/Elimination" <|
+                \_ ->
+                    let
+                        goal =
+                            "∀x ∃y P(x,y) ⊢ ∀z ∃y P(z,y)"
+
+                        proof =
+                            [ ( 0, ( "∀x (∃y P(x,y))", "premise" ) )
+                            , ( 1, ( "[x0]", "" ) )
+                            , ( 1, ( "∃y P(x0,y)", "∀e" ) )
+                            , ( 0, ( "∀z (∃y P(z,y))", "∀i" ) )
                             ]
 
                         result =

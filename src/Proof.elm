@@ -43,7 +43,7 @@ type Proof
 type Justification
     = Premise
     | Assumption
-    | JRule String
+    | RuleName String
 
 
 
@@ -83,9 +83,25 @@ vars cfg rvs =
 
 jfcReplacements : List ( List String, Justification )
 jfcReplacements =
-    [ ( [ "p", "prm", "prem", "premise" ], Premise )
-    , ( [ "ass", "asm", "assm", "assumption" ], Assumption )
+    [ ( [ "prem", "premise" ], Premise )
+    , ( [ "ass", "assm", "assumption" ], Assumption )
     ]
+
+
+allowedJustifications : RuleSubset -> List (List String)
+allowedJustifications sub =
+    jfcReplacements
+        |> List.map Tuple.first
+        |> (\xs -> xs ++ Rule.currentRuleNamesPerRule sub)
+
+
+displayAllowedJustifications : RuleSubset -> String
+displayAllowedJustifications sub =
+    sub
+        |> allowedJustifications
+        |> List.map (\xs -> "{" ++ String.join "," xs ++ "}")
+        |> String.join ", "
+        |> (\s -> "{" ++ s ++ "}")
 
 
 
@@ -97,7 +113,7 @@ lookupJustification sub s =
     case List.filter (\( xs, _ ) -> List.member s xs) jfcReplacements of
         [] ->
             if List.member s (Rule.currentRuleNames sub) then
-                Just (JRule s)
+                Just (RuleName s)
 
             else
                 Nothing
@@ -762,7 +778,7 @@ displayJustification j =
         Assumption ->
             "assumption"
 
-        JRule s ->
+        RuleName s ->
             s
 
 

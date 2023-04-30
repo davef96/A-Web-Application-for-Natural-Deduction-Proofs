@@ -1,0 +1,17 @@
+goal =
+    "p ∨ q, p ⟶ r, q ⟶ s ∧ r ⊢ r"
+
+proof =
+    [ ( 0, ( "p ∨ q", "premise" ) )
+    , ( 0, ( "p ⟶ r", "premise" ) )
+    , ( 0, ( "q ⟶ s ∧ r", "premise" ) )
+    , ( 1, ( "p", "assumption" ) )
+    , ( 1, ( "r", "⟶e" ) )
+    , ( 1, ( "q", "assumption" ) )
+    , ( 1, ( "s ∧ r", "⟶e" ) )
+    , ( 1, ( "r", "∧e" ) )
+    , ( 0, ( "r", "∨e" ) )
+    ]
+
+config =
+	{fol:False,qtype:True,replacesc:True,replacekw:True,replacegreek:True,subset:FOL,conjstronger:False,inputmode:False,heuristics:True}

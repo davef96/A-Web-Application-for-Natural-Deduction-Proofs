@@ -446,6 +446,17 @@ frmVars f =
 
 
 
+-- obtains set of variables in formula
+
+
+vars : Formula -> Set String
+vars f =
+    f
+        |> frmVars
+        |> (\( s1, s2 ) -> Set.union s1 s2)
+
+
+
 -- obtains set of free variables in a formula
 
 
@@ -955,6 +966,58 @@ deconstructFormula frm =
             ( OpId, [ Predicate s ts ] )
 
 
+reconstructFormula : Operator -> List Formula -> Maybe Formula
+reconstructFormula op fs =
+    let
+        binary =
+            \bin ->
+                case fs of
+                    f1 :: f2 :: [] ->
+                        bin f1 f2
+                            |> Just
+
+                    _ ->
+                        Nothing
+    in
+    case op of
+        OpTop ->
+            Just Top
+
+        OpBot ->
+            Just Bot
+
+        OpNeg ->
+            fs
+                |> List.head
+                |> Maybe.map (\f -> Neg f)
+
+        OpConj ->
+            binary Conj
+
+        OpDisj ->
+            binary Disj
+
+        OpImpl ->
+            binary Impl
+
+        OpIff ->
+            binary Iff
+
+        OpExists x ->
+            fs
+                |> List.head
+                |> Maybe.map (\f -> Exists x f)
+
+        OpForAll x ->
+            fs
+                |> List.head
+                |> Maybe.map (\f -> ForAll x f)
+
+        _ ->
+            fs
+                |> List.head
+
+
 
 -- replaces sub formula, using given substitution
 
@@ -1058,6 +1121,118 @@ abstractTerm t =
             False
 
 
+
+-- checks if given formula is purely abstract (consists only of placeholders and connectives)
+
+
+abstractFormula : Formula -> Bool
+abstractFormula frm =
+    let
+        recur1 =
+            \a ->
+                abstractFormula a
+
+        recur2 =
+            \a b ->
+                abstractFormula a && abstractFormula b
+    in
+    case frm of
+        Neg a ->
+            recur1 a
+
+        Conj a b ->
+            recur2 a b
+
+        Disj a b ->
+            recur2 a b
+
+        Impl a b ->
+            recur2 a b
+
+        Iff a b ->
+            recur2 a b
+
+        ForAll x a ->
+            abstract x && recur1 a
+
+        Exists x a ->
+            abstract x && recur1 a
+
+        Equals ( t1, t2 ) ->
+            abstractTerm t1 && abstractTerm t2
+
+        PredConst s ->
+            abstract s
+
+        Predicate s ts ->
+            ts
+                |> List.foldl (\t state -> state && abstractTerm t) True
+                |> (\r -> r && abstract s)
+
+        _ ->
+            False
+
+
+
+-- checks if given formula is fully instantiated (does not contain any placeholders)
+
+
+specificFormula : Formula -> Bool
+specificFormula frm =
+    let
+        recur1 =
+            \a ->
+                specificFormula a
+
+        recur2 =
+            \a b ->
+                specificFormula a && specificFormula b
+
+        nabstract =
+            \x ->
+                not (abstract x)
+
+        nabstractterm =
+            \x ->
+                not (abstractTerm x)
+    in
+    case frm of
+        Neg a ->
+            recur1 a
+
+        Conj a b ->
+            recur2 a b
+
+        Disj a b ->
+            recur2 a b
+
+        Impl a b ->
+            recur2 a b
+
+        Iff a b ->
+            recur2 a b
+
+        ForAll x a ->
+            nabstract x && recur1 a
+
+        Exists x a ->
+            nabstract x && recur1 a
+
+        Equals ( t1, t2 ) ->
+            nabstractterm t1 && nabstractterm t2
+
+        PredConst s ->
+            nabstract s
+
+        Predicate s ts ->
+            ts
+                |> List.foldl (\t state -> state && nabstractterm t) True
+                |> (\r -> r && nabstract s)
+
+        _ ->
+            False
+
+
 displayTerm : Term -> String
 displayTerm t =
     case t of
@@ -1089,12 +1264,27 @@ displayTermSubst subst =
         ( lhs, rhs ) =
             subst
     in
-    "[" ++ displayTerm rhs ++ "/" ++ displayTerm lhs ++ "]"
+    displayTerm lhs ++ " ↦ " ++ displayTerm rhs
 
 
 displayTermSubsts : List TermSubst -> String
 displayTermSubsts tsubsts =
     List.map displayTermSubst tsubsts
+        |> String.join ", "
+
+
+displayTermSubstFree : TermSubst -> String
+displayTermSubstFree subst =
+    let
+        ( lhs, rhs ) =
+            subst
+    in
+    "[" ++ displayTerm rhs ++ "/" ++ displayTerm lhs ++ "]"
+
+
+displayTermSubstsFree : List TermSubst -> String
+displayTermSubstsFree tsubsts =
+    List.map displayTermSubstFree tsubsts
         |> String.join ","
 
 
@@ -1234,6 +1424,13 @@ displayFormula q f =
 
         _ ->
             displayFormulaHelper q f
+
+
+displayFormulas : Bool -> List Formula -> String
+displayFormulas b fs =
+    fs
+        |> List.map (displayFormula b)
+        |> String.join ", "
 
 
 displaySeq : Bool -> Seq -> String

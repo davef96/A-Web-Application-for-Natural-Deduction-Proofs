@@ -29,7 +29,7 @@ suite =
                             matchFormulas x y
 
                         expect =
-                            Ok ( [], [ ( Var "y", Func "f" [ Var "x" ] ), ( Var "z", Func "g" [ Var "x" ] ) ], ([], []) )
+                            Ok ( [], [ ( Var "y", Func "f" [ Var "x" ] ), ( Var "z", Func "g" [ Var "x" ] ) ], ( [], [], Nothing ) )
                     in
                     Expect.equal m expect
             , test "match(∀?v1(P(?v1)), ∀x(P(x)))" <|
@@ -45,7 +45,23 @@ suite =
                             matchFormulas x y
 
                         expect =
-                            Ok ( [], [ ( Var "1", Var "x" ) ], (["1"], ["x"]) )
+                            Ok ( [], [ ( Var "1", Var "x" ) ], ( [], [], Nothing ) )
+                    in
+                    Expect.equal m expect
+            , test "match(∀?v1∃x(P(?v1,x)), ∀x∃x(P(x,x)))" <|
+                \_ ->
+                    let
+                        x =
+                            ForAll "1" (Exists "x" (Predicate "P" [ Var "1" ]))
+
+                        y =
+                            ForAll "x" (Exists "x" (Predicate "P" [ Var "x" ]))
+
+                        m =
+                            matchFormulas x y
+
+                        expect =
+                            Ok ( [], [ ( Var "1", Var "x" ), ( Var "x", Var "x" ) ], ( [], [ ( Var "1", Var "x" ) ], Nothing ) )
                     in
                     Expect.equal m expect
             ]

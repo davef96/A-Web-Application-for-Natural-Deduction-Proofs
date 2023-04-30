@@ -5,6 +5,7 @@ module Rule exposing (..)
 
 import Formula exposing (Formula(..), FrmSubst, Operator(..), Term(..), TermSubst)
 import ModelDefs exposing (RuleSubset(..))
+import Set
 import Utils
 
 
@@ -74,6 +75,131 @@ type alias Rule =
 
 
 
+-- type aliases to represent marked premises
+-- marking is used to indicate that a premise requires that a generalized form is computed; regular matching does not suffice
+
+
+type alias MarkedAbstract =
+    ( Bool, Abstract )
+
+
+type alias MarkedAbstracts =
+    List MarkedAbstract
+
+
+type alias MarkedPremises =
+    ( PremiseType, MarkedAbstracts )
+
+
+type alias IndexedMarkedPremises =
+    ( PremiseType, List ( Int, MarkedAbstract ) )
+
+
+type alias MarkedRule =
+    ( List String, MarkedPremises, RuleConclusion )
+
+
+markPremises : Rule -> MarkedRule
+markPremises rule =
+    let
+        ( names, ( premtype, prems ), conclusion ) =
+            rule
+
+        -- obtain all ?x that are allowed to be replaced by some ?t
+        allowedreplacex =
+            \tsubsts ->
+                tsubsts
+                    |> List.map
+                        (\( x, _ ) ->
+                            case x of
+                                Var s ->
+                                    if Formula.abstract s then
+                                        s
+
+                                    else
+                                        ""
+
+                                _ ->
+                                    ""
+                        )
+                    |> List.filter (String.isEmpty >> not)
+
+        -- ?x occurs in frm; either free or bound
+        xinfrm =
+            \x frm ->
+                frm
+                    |> Formula.vars
+                    |> Set.member x
+
+        xinfrmws =
+            \x ( frm, _ ) ->
+                xinfrm x frm
+
+        xinfixed =
+            \x fixable ->
+                fixable
+                    |> List.map Tuple.first
+                    |> List.member x
+
+        xinassms =
+            \x assms ->
+                assms
+                    |> List.any (\fws -> xinfrmws x fws)
+
+        xnotinanypremfrm =
+            \x ps ->
+                ps
+                    |> List.any
+                        (\p ->
+                            case p of
+                                AbstractFormula ( frm, _ ) ->
+                                    xinfrm x frm
+
+                                AbstractBlock fixable assms con ->
+                                    xinfixed x fixable || xinassms x assms || xinfrmws x con
+                        )
+                    |> not
+
+        xnotincon =
+            \x con ->
+                case con of
+                    Conclusion frmws ->
+                        xinfrmws x frmws
+                            |> not
+
+                    ConclusionEither frmws1 frmws2 ->
+                        xinfrmws x frmws1
+                            || xinfrmws x frmws2
+                            |> not
+
+        anyxnotinanyrulefrm =
+            \ps con xs ->
+                xs
+                    |> List.any (\x -> xnotinanypremfrm x ps && xnotincon x con)
+
+        markprem =
+            \tsubsts ps con ->
+                tsubsts
+                    |> allowedreplacex
+                    |> anyxnotinanyrulefrm ps con
+
+        -- if an allowed term substitution of the form [?t/?x] occurs in a premise AND ?x does not occur in any formula (premises + conclusion) THEN mark this premise
+    in
+    prems
+        |> List.map
+            (\prem ->
+                case prem of
+                    AbstractFormula ( _, tsubsts ) ->
+                        ( markprem tsubsts prems conclusion, prem )
+
+                    AbstractBlock _ _ _ ->
+                        -- blocks currently do not support this
+                        ( False, prem )
+            )
+        |> (\marked -> ( names, ( premtype, marked ), conclusion ))
+
+
+
 -- rule version
 
 
@@ -93,7 +219,7 @@ displayFrmWithSubst q f =
         Formula.displayFormula q frm
 
     else
-        Formula.displayFormulaHelper q frm ++ Formula.displayTermSubsts tsubst
+        Formula.displayFormulaHelper q frm ++ Formula.displayTermSubstsFree tsubst
 
 
 displayAbstract : Bool -> Abstract -> String
@@ -339,6 +465,61 @@ indexedSpecificityComparison x y =
                             EQ
 
 
+indexedMarkedSpecificityComparison : ( Int, MarkedAbstract ) -> ( Int, MarkedAbstract ) -> Order
+indexedMarkedSpecificityComparison x y =
+    let
+        ( index1, ( m1, a1 ) ) =
+            x
+
+        ( index2, ( m2, a2 ) ) =
+            y
+
+        ( i1, j1 ) =
+            abstractSpecificity a1
+
+        ( i2, j2 ) =
+            abstractSpecificity a2
+
+        icomp =
+            case compare i1 i2 of
+                LT ->
+                    GT
+
+                GT ->
+                    LT
+
+                EQ ->
+                    case compare j1 j2 of
+                        LT ->
+                            GT
+
+                        GT ->
+                            LT
+
+                        EQ ->
+                            case compare index1 index2 of
+                                LT ->
+                                    GT
+
+                                GT ->
+                                    LT
+
+                                EQ ->
+                                    EQ
+    in
+    if m1 && m2 then
+        icomp
+
+    else if m1 then
+        GT
+
+    else if m2 then
+        LT
+
+    else
+        icomp
+
+
 specificityComparison : Abstract -> Abstract -> Order
 specificityComparison x y =
     let
@@ -365,6 +546,64 @@ specificityComparison x y =
 
                 EQ ->
                     EQ
+
+
+indexedMarkedComparison : ( Int, MarkedAbstract ) -> ( Int, MarkedAbstract ) -> Order
+indexedMarkedComparison x y =
+    let
+        ( index1, ( m1, _ ) ) =
+            x
+
+        ( index2, ( m2, _ ) ) =
+            y
+    in
+    if m1 && m2 then
+        compare index1 index2
+
+    else if m1 then
+        GT
+
+    else if m2 then
+        LT
+
+    else
+        compare index1 index2
+
+
+getNextIndexedMarkedAbstractFact : List ( Int, MarkedAbstract ) -> ( Maybe ( Int, MarkedAbstract ), List ( Int, MarkedAbstract ) )
+getNextIndexedMarkedAbstractFact afs =
+    let
+        sorted =
+            List.sortWith indexedMarkedComparison afs
+    in
+    case sorted of
+        [] ->
+            ( Nothing, [] )
+
+        x :: xs ->
+            ( Just x, xs )
+
+
+
+-- obtains most specific, indexed abstract fact from given list
+
+
+getMostSpecificIndexedMarkedAbstractFact : List ( Int, MarkedAbstract ) -> ( Maybe ( Int, MarkedAbstract ), List ( Int, MarkedAbstract ) )
+getMostSpecificIndexedMarkedAbstractFact afs =
+    let
+        sorted =
+            List.sortWith indexedMarkedSpecificityComparison afs
+    in
+    case sorted of
+        [] ->
+            ( Nothing, [] )
+
+        x :: xs ->
+            ( Just x, xs )
+
+
+
+-- obtains most specific, indexed abstract fact from given list
 
 
 getMostSpecificIndexedAbstractFact : List ( Int, Abstract ) -> ( Maybe ( Int, Abstract ), List ( Int, Abstract ) )
@@ -452,6 +691,16 @@ applyTermSubsts tsubsts afrms =
         afrms
 
 
+applyTermSubstsMarked : List TermSubst -> List MarkedAbstract -> List MarkedAbstract
+applyTermSubstsMarked tsubsts afrms =
+    List.foldr
+        (\( m, x ) state ->
+            ( m, List.foldl replaceAbstractTerm x tsubsts ) :: state
+        )
+        []
+        afrms
+
+
 applyTermSubstsToPrems : RulePremises -> List TermSubst -> RulePremises
 applyTermSubstsToPrems prems tsubsts =
     let
@@ -459,6 +708,15 @@ applyTermSubstsToPrems prems tsubsts =
             prems
     in
     ( premtype, applyTermSubsts tsubsts afrms )
+
+
+applyTermSubstsToMarkedPrems : MarkedPremises -> List TermSubst -> MarkedPremises
+applyTermSubstsToMarkedPrems markedprems tsubsts =
+    let
+        ( premtype, afrms ) =
+            markedprems
+    in
+    ( premtype, applyTermSubstsMarked tsubsts afrms )
 
 
 applyFrmSubsts : List FrmSubst -> List Abstract -> List Abstract
@@ -471,6 +729,16 @@ applyFrmSubsts fsubsts afrms =
         afrms
 
 
+applyFrmSubstsMarked : List FrmSubst -> List MarkedAbstract -> List MarkedAbstract
+applyFrmSubstsMarked fsubsts afrms =
+    List.foldr
+        (\( m, x ) state ->
+            ( m, List.foldl replaceAbstractSubFormula x fsubsts ) :: state
+        )
+        []
+        afrms
+
+
 applyFrmSubstsToPrems : RulePremises -> List FrmSubst -> RulePremises
 applyFrmSubstsToPrems prems fsubsts =
     let
@@ -478,6 +746,15 @@ applyFrmSubstsToPrems prems fsubsts =
             prems
     in
     ( premtype, applyFrmSubsts fsubsts afrms )
+
+
+applyFrmSubstsToMarkedPrems : MarkedPremises -> List FrmSubst -> MarkedPremises
+applyFrmSubstsToMarkedPrems markedprems fsubsts =
+    let
+        ( premtype, afrms ) =
+            markedprems
+    in
+    ( premtype, applyFrmSubstsMarked fsubsts afrms )
 
 
 
@@ -545,10 +822,13 @@ currentRules sub =
             ( [ "⟷e" ], ( All, [ AbstractFormula ( Iff (PredConst "1") (PredConst "2"), [] ) ] ), ConclusionEither ( Impl (PredConst "1") (PredConst "2"), [] ) ( Impl (PredConst "2") (PredConst "1"), [] ) )
 
         eqI =
-            ( [ "＝i" ], ( All, [] ), Conclusion ( Equals ( Var "1", Var "1" ), [] ) )
+            ( [ "＝i" ], ( All, [] ), Conclusion ( Equals ( Var "-1", Var "-1" ), [] ) )
 
         eqE =
             ( [ "＝e" ], ( All, [ AbstractFormula ( Equals ( Var "-1", Var "-2" ), [] ), AbstractFormula ( PredConst "1", [ ( Var "3", Var "-1" ) ] ) ] ), Conclusion ( PredConst "1", [ ( Var "3", Var "-2" ) ] ) )
+
+        eqE2 =
+            ( [ "＝e2" ], ( All, [ AbstractFormula ( Equals ( Var "-2", Var "-1" ), [] ), AbstractFormula ( PredConst "1", [ ( Var "3", Var "-1" ) ] ) ] ), Conclusion ( PredConst "1", [ ( Var "3", Var "-2" ) ] ) )
 
         allI =
             ( [ "∀i" ], ( All, [ AbstractBlock [ ( "1", True ) ] [] ( PredConst "1", [ ( Var "2", Var "1" ) ] ) ] ), Conclusion ( ForAll "2" (PredConst "1"), [] ) )
@@ -576,7 +856,7 @@ currentRules sub =
 
         -- 3) intuitionistic first-order logic
         intfol =
-            intprop ++ [ eqI, eqE, allI, allE, exI, exE ]
+            intprop ++ [ eqI, eqE, eqE2, allI, allE, exI, exE ]
 
         -- 4) (classical) first-order logic
         fol =
@@ -600,16 +880,32 @@ currentRules sub =
 
 
 
+-- list of list of all accepted rule names for respective rule
+
+
+currentRuleNamesPerRule : RuleSubset -> List (List String)
+currentRuleNamesPerRule sub =
+    sub
+        |> currentRules
+        |> List.map (\( names, _, _ ) -> names)
+
+
+
 -- list of all current rule names
 
 
 currentRuleNames : RuleSubset -> List String
 currentRuleNames sub =
-    List.concatMap
-        (\( names, _, _ ) ->
-            names
-        )
-        (currentRules sub)
+    sub
+        |> currentRules
+        |> List.concatMap (\( names, _, _ ) -> names)
+
+
+displayRuleNames : RuleSubset -> String
+displayRuleNames sub =
+    sub
+        |> currentRuleNames
+        |> String.join ", "
 
 
 getRuleHelper : List Rule -> String -> Maybe Rule

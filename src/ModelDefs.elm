@@ -4,6 +4,7 @@
 module ModelDefs exposing (..)
 
 import Keywords
+import Utils
 
 
 
@@ -226,6 +227,181 @@ beginsBlock n proof =
         |> (\( _, _, x ) -> x)
 
 
+
+-- helper to check if line ends a block (i.e., is last line within a block); return triple (linenr, blocklength, endsblock?)
+
+
+endsBlockHelper : Int -> Int -> Bool -> List RawProof -> ( Int, Int, Bool )
+endsBlockHelper n start block ps =
+    let
+        nblock =
+            ps
+                |> proofLengths
+
+        blockend =
+            start + nblock
+    in
+    if n > start && n <= blockend then
+        -- line in this block (but may be nested)
+        if n == blockend && block then
+            -- case 1) not nested; last step in current block
+            case Utils.splitLast ps of
+                ( until, Just last ) ->
+                    case last of
+                        RawStep _ _ ->
+                            ( n, nblock, True )
+
+                        RawBlock ps1 ->
+                            endsBlockHelper n (start + proofLengths until) True ps1
+
+                        RawBegin ps1 ->
+                            endsBlockHelper n (start + proofLengths until) True ps1
+
+                _ ->
+                    ( n, nblock, False )
+
+        else
+            -- case 2) nested? find next block!
+            ps
+                |> List.foldl
+                    (\step state ->
+                        let
+                            ( i, nb, b ) =
+                                state
+                        in
+                        case step of
+                            RawStep _ _ ->
+                                ( i + 1, nb, b )
+
+                            RawBlock ps1 ->
+                                if b then
+                                    state
+
+                                else
+                                    endsBlockHelper n i True ps1
+
+                            _ ->
+                                state
+                    )
+                    ( start, nblock, False )
+
+    else
+        -- line not in this block!
+        ( blockend, nblock, False )
+
+
+
+-- line ends block?
+
+
+endsBlock : RawProof -> Int -> Bool
+endsBlock proof n =
+    case proof of
+        RawStep _ _ ->
+            False
+
+        RawBegin ps ->
+            endsBlockHelper n 0 False ps
+                |> (\( _, _, z ) -> z)
+
+        RawBlock ps ->
+            endsBlockHelper n 0 True ps
+                |> (\( _, _, z ) -> z)
+
+
+existsBlockBetweenHelper : List RawProof -> Int -> Int -> Int -> ( Int, Bool, List RawProof )
+existsBlockBetweenHelper proofs start n m =
+    List.foldl
+        (\step state ->
+            let
+                ( i, exists, acc ) =
+                    state
+
+                check =
+                    \ps ->
+                        case
+                            List.filter
+                                (\st ->
+                                    case st of
+                                        RawBlock _ ->
+                                            True
+
+                                        _ ->
+                                            False
+                                )
+                                ps
+                        of
+                            [] ->
+                                False
+
+                            _ ->
+                                True
+            in
+            if exists then
+                state
+
+            else
+                case step of
+                    RawStep _ _ ->
+                        if i + 1 == m then
+                            ( i + 1, check acc, acc )
+
+                        else
+                            ( i + 1, exists, acc ++ [ step ] )
+
+                    RawBlock ps ->
+                        let
+                            endofblock =
+                                i + proofLengths ps
+
+                            subsumed =
+                                i + 1 <= n && endofblock >= m
+
+                            blockstep =
+                                i + 1 > n && endofblock < m
+                        in
+                        -- not subsumed <==> i + 1 > n || endofblock < m
+                        if subsumed then
+                            existsBlockBetweenHelper ps i n m
+                                |> (\( ri, rex, racc ) -> ( ri, rex, acc ++ racc ))
+
+                        else if blockstep then
+                            ( endofblock, exists, acc ++ [ step ] )
+
+                        else
+                            ( endofblock, exists, acc )
+
+                    _ ->
+                        state
+        )
+        ( start, False, [] )
+        proofs
+
+
+existsBlockBetweenList : List RawProof -> Int -> Int -> Int -> Bool
+existsBlockBetweenList ps start n m =
+    existsBlockBetweenHelper ps start n m
+        |> (\( _, ex, _ ) -> ex)
+
+
+
+-- does there exist a block between step n and step m ?
+-- [..., sn, ..., block [...], sm, ...] ==> True
+
+
+existsBlockBetween : RawProof -> Int -> Int -> Bool
+existsBlockBetween proof n m =
+    case proof of
+        RawBegin ps ->
+            existsBlockBetweenList ps 0 n m
+
+        RawBlock ps ->
+            existsBlockBetweenList ps 0 n m
+
+        RawStep _ _ ->
+            existsBlockBetweenList [ proof ] 0 n m
+
+
 proofLength : RawProof -> Int
 proofLength proof =
     case proof of
@@ -385,6 +561,176 @@ splitRawBlock n start depth acc proof =
 
 
 
+-- content of block [s1,...,sn,...,sk] is split into ( block [s1,...,sn], sn+1,...,sk )
+
+
+endBlockHelper : Int -> Int -> Int -> List RawProof -> RawProof -> ( Int, ( Int, List RawProof ), ( List RawProof, Maybe RawProof, List RawProof ) )
+endBlockHelper n start depth acc proof =
+    let
+        recur =
+            List.foldl
+                (\step state ->
+                    let
+                        ( i, ( k, prf ), ( before, sn, after ) ) =
+                            state
+                    in
+                    case step of
+                        RawStep frm jfc ->
+                            let
+                                newi =
+                                    i + 1
+
+                                newtriple =
+                                    if newi == n then
+                                        ( before, RawStep frm jfc |> Just, after )
+
+                                    else if newi < n then
+                                        ( addStep ( frm, jfc ) before, sn, after )
+
+                                    else
+                                        ( before, sn, addStep ( frm, jfc ) after )
+                            in
+                            ( newi, ( k, prf ), newtriple )
+
+                        RawBlock ps ->
+                            let
+                                blocklen =
+                                    proofLengths ps
+                            in
+                            if i + blocklen < n then
+                                ( i + blocklen, ( k, prf ), ( addBlock ps before, sn, after ) )
+
+                            else if i >= n then
+                                ( i + blocklen, ( k, prf ), ( before, sn, addBlock ps after ) )
+
+                            else
+                                endBlockHelper n i (k + 1) prf step
+                                    |> (\( j, ( rk, rprf ), ( bb, snb, ba ) ) ->
+                                            -- split happened directly (without further recursive calls)
+                                            if rk == k + 1 then
+                                                case snb of
+                                                    Just stepn ->
+                                                        ( j, ( rk, rprf ), ( addBlock (bb ++ [ stepn ]) before, snb, after ++ ba ) )
+
+                                                    Nothing ->
+                                                        ( j, ( rk, rprf ), ( addBlock bb before, snb, after ++ ba ) )
+
+                                            else
+                                                case snb of
+                                                    Just stepn ->
+                                                        case rprf of
+                                                            [] ->
+                                                                ( j, ( rk, addBlock (bb ++ ba) prf ), ( before, snb, after ) )
+
+                                                            _ ->
+                                                                ( j, ( rk, addBlock (bb ++ rprf ++ ba) prf ), ( before, snb, after ) )
+
+                                                    Nothing ->
+                                                        ( j, ( rk, addBlock (bb ++ ba) rprf ), ( before, snb, after ) )
+                                       )
+
+                        _ ->
+                            state
+                )
+                ( start, ( depth, acc ), ( [], Nothing, [] ) )
+    in
+    case proof of
+        RawStep _ _ ->
+            recur [ proof ]
+
+        RawBegin ps ->
+            recur ps
+
+        RawBlock ps ->
+            recur ps
+
+
+
+-- given proof [..., block [s1,...,sk], ..., sn, ...] yields [..., block [s1,...,sk,...,sn], ...]
+
+
+extendBlockHelper : Int -> Int -> List RawProof -> ( ( Int, Bool ), List RawProof, List RawProof )
+extendBlockHelper n start proofs =
+    List.foldl
+        (\step state ->
+            let
+                ( ( i, bacc ), acc, prfs ) =
+                    state
+            in
+            case step of
+                RawStep frm jfc ->
+                    let
+                        newi =
+                            i + 1
+
+                        ( newacc, newprf, nbacc ) =
+                            if newi == n then
+                                -- pack acc & step into block and add to prfs
+                                ( [], acc |> addStep ( frm, jfc ) |> (\nacc -> addBlock nacc prfs), False )
+
+                            else if bacc then
+                                -- accumulate step
+                                ( addStep ( frm, jfc ) acc, prfs, bacc )
+
+                            else
+                                -- simply add step to prfs
+                                ( acc, addStep ( frm, jfc ) prfs, bacc )
+                    in
+                    ( ( newi, nbacc ), newacc, newprf )
+
+                RawBlock ps ->
+                    let
+                        startofblock =
+                            i + 1
+
+                        endofblock =
+                            i + proofLengths ps
+
+                        subsequent =
+                            existsBlockBetweenList proofs start endofblock n
+                    in
+                    -- accumulate this block if 'n' positioned after this block AND NO subsequent blocks exist in-between
+                    -- continue to accumulate steps (not blocks) until 'n' reached
+                    if n > startofblock && n > endofblock && not subsequent then
+                        ( ( endofblock, True ), acc ++ ps, prfs )
+
+                    else if n > startofblock && n <= endofblock then
+                        let
+                            ( _, acc1, uprfs ) =
+                                extendBlockHelper n i ps
+                        in
+                        ( ( endofblock, False ), acc ++ acc1, addBlock uprfs prfs )
+
+                    else
+                        -- add this block and continue
+                        ( ( endofblock, False ), [], addBlock ps prfs )
+
+                _ ->
+                    state
+        )
+        ( ( start, False ), [], [] )
+        proofs
+
+
+
+-- given proof containing [..., block [s1,...,sk], ..., sn, ...] yields [..., block [s1,...,sk,...,sn], ...]
+
+
+extendBlock : Int -> RawProof -> RawProof
+extendBlock n proof =
+    case proof of
+        RawBegin ps ->
+            extendBlockHelper n 0 ps
+                |> (\( _, _, prf ) ->
+                        prf
+                            |> RawBegin
+                   )
+
+        _ ->
+            proof
+
+
+
 -- content of RawBegin [s1,...,sn,...,sk] is split into ( [s1,...,sn-1], sn, [sn+1,...,sk] )
 
 
@@ -397,6 +743,31 @@ splitRawProof n proof =
                         (case acc of
                             [] ->
                                 before ++ [ step ] ++ after
+
+                            _ ->
+                                before ++ acc ++ after
+                        )
+                            |> pruneRaw
+                            |> RawBegin
+
+                    Nothing ->
+                        proof
+           )
+
+
+
+-- end block after line n
+
+
+endBlock : Int -> RawProof -> RawProof
+endBlock n proof =
+    endBlockHelper n 0 0 [] proof
+        |> (\( _, ( _, acc ), ( before, sn, after ) ) ->
+                case sn of
+                    Just step ->
+                        (case acc of
+                            [] ->
+                                before ++ after
 
                             _ ->
                                 before ++ acc ++ after

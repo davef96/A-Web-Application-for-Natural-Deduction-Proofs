@@ -1,0 +1,7 @@
+@font-face {
+  font-family: 'NotoSansMono';
+  src: local('Noto Sans Mono'),
+       url('NotoSansMono-Regular.ttf') format('truetype'),
+       url('NotoSansMono-Bold.ttf') format('truetype');
+}
+

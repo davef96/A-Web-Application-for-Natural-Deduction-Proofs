@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>Main</title>
+		<style>body { padding: 0; margin: 0; }</style>
+		<link rel="stylesheet" href="font/font.css">
+		<script src="main.js"></script>
+	</head>
+	<body>
+		<div id="main"></div>
+		<script>
+			var app = Elm.Main.init({
+				node: document.getElementById('main')
+			});
+
+			function setCaret(elemId, caret) {
+				var elem = document.getElementById(elemId);
+				elem.setSelectionRange(caret, caret);
+			}
+
+			function getCaret(elemId) {
+				var elem = document.getElementById(elemId);
+				return elem.selectionStart;
+			}
+
+			app.ports.requestCaretPos.subscribe(function(id) {
+				var caret = getCaret(id);
+				let text = '{"id":"' + id + '","caret":' + JSON.stringify(caret) + '}';
+				const obj = JSON.parse(text);
+				app.ports.receiveCaretPos.send(obj);
+			});
+
+			// https://discourse.elm-lang.org/t/modifying-the-string-in-a-text-box-pushes-the-cursor-to-the-end/6151
+			app.ports.requestCaretCorrection.subscribe(function(obj) {
+				window.requestAnimationFrame(() => {
+					setCaret(obj.id, obj.caret);
+				});
+			});
+		</script>
+	</body>
+</html>

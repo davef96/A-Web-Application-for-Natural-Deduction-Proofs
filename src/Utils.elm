@@ -361,6 +361,24 @@ removeEqPairs xs =
 
 
 
+-- remove pairs where first == second && first in list xs
+
+
+removeEqPairsFor : List a -> List ( a, a ) -> List ( a, a )
+removeEqPairsFor xs ys =
+    case ys of
+        [] ->
+            []
+
+        ( y1, y2 ) :: rest ->
+            if y1 == y2 && List.member y1 xs then
+                removeEqPairsFor xs rest
+
+            else
+                ( y1, y2 ) :: removeEqPairsFor xs rest
+
+
+
 -- remove pairs where first == second && first not in list xs
 
 
