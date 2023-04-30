@@ -1,7 +1,7 @@
 # A Web Application for Natural Deduction Proofs
 This work describes the implementation of an interactive web application that facilitates writing box style natural deduction proofs for statements in first-order logic. A search algorithm is able to automatically infer required line references and thus the user only has to state a rule to justify a formula. Utilizing a generic approach enables this project to support rules without the requirement of handling each rule explicitly by providing specific code. The primary goal of this application is the use for teaching purposes. A simple user interface is provided to allow for a good educational experience. This tool has been implemented using the functional web framework [Elm](https://elm-lang.org/).
 
-## Launching the Application / Requirements
+## Requirements
 - [Elm](https://guide.elm-lang.org/install/elm.html) is required to compile the project 
 - more tools are required to run the tests, etc. (see below)
 
