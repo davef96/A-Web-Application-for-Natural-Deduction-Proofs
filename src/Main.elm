@@ -2013,7 +2013,6 @@ view model =
         helptext =
             goaltext ++ "\n\n" ++ frmtext ++ "\n\n" ++ linetext ++ "\n\n" ++ tooltext ++ "\n\n" ++ errtext ++ "\n\n" ++ bugtext
 
-
         {- -- allows to display proof checking and build state, very useful for debugging
            viewprf =
                List.map (\t -> tr [] [ td [] [ text t ] ]) s
@@ -2092,27 +2091,33 @@ displayFormatHint qtype =
     else
         "binds everything after '.'"
 
+
 bnfProp : String
 bnfProp =
     "ϕ ⩴ p | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ)"
+
 
 bnfTerm : String
 bnfTerm =
     "t ⩴ x | f(t,...,t)"
 
+
 bnfFOL1 : String
 bnfFOL1 =
     "ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x ϕ) | (∃x ϕ)"
 
+
 bnfFOL2 : String
 bnfFOL2 =
     "ϕ ⩴ P | P(t,...,t) | (t = t) | ⊥ | ⊤ | (¬ϕ) | (ϕ∧ϕ) | (ϕ∨ϕ) | (ϕ⟶ϕ) | (ϕ⟷ϕ) | (∀x. ϕ) | (∃x. ϕ)"
+
 
 displayBNF : Config -> String
 displayBNF cfg =
     if cfg.fol then
         if cfg.qtype then
             bnfFOL1
+
         else
             bnfFOL2
 
@@ -2124,13 +2129,16 @@ precPropDefault : String
 precPropDefault =
     "{¬} > {∧,∨} > {⟶,⟷}"
 
+
 precFOL1Default : String
 precFOL1Default =
     "{=} > {¬,∀,∃} > {∧,∨} > {⟶,⟷}"
 
+
 precFOL2Default : String
 precFOL2Default =
     "{=} > {¬} > {∧,∨} > {⟶,⟷} > {∀,∃}"
+
 
 displayPrecedence : Config -> String
 displayPrecedence cfg =
@@ -2141,6 +2149,7 @@ displayPrecedence cfg =
 
             else
                 precFOL1Default
+
         else if cfg.conjstronger then
             "{=} > {¬} > {∧} > {∨} > {⟶,⟷} > {∀,∃}"
 
@@ -2152,6 +2161,7 @@ displayPrecedence cfg =
 
     else
         precPropDefault
+
 
 displayAssociativity : String
 displayAssociativity =

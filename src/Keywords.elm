@@ -64,31 +64,36 @@ displayReplacements : List ( String, String ) -> List String
 displayReplacements =
     List.map displayReplacement
 
+
 acceptedReplacements : List ( String, String ) -> List String
 acceptedReplacements rs =
     case rs of
         [] ->
             []
-        (lhs, rhs) :: rest ->
+
+        ( lhs, rhs ) :: rest ->
             let
-                (otheroptions, remaining) =
+                ( otheroptions, remaining ) =
                     rest
-                    |> List.partition (\(_, rhs1) -> rhs == rhs1)
+                        |> List.partition (\( _, rhs1 ) -> rhs == rhs1)
 
                 options =
-                    (lhs, rhs) :: otheroptions
-                    |> List.map Tuple.first
+                    ( lhs, rhs )
+                        :: otheroptions
+                        |> List.map Tuple.first
 
                 str =
                     "(" ++ rhs ++ ": {" ++ String.join "," options ++ "})"
             in
             str :: acceptedReplacements remaining
 
-displayAcceptedReplacements : List (String, String) -> String
+
+displayAcceptedReplacements : List ( String, String ) -> String
 displayAcceptedReplacements rs =
     rs
-    |> acceptedReplacements
-    |> String.join ", "
+        |> acceptedReplacements
+        |> String.join ", "
+
 
 displayAllAcceptedReplacements : String
 displayAllAcceptedReplacements =
